@@ -116,7 +116,7 @@ Live coding CLIs are not required for unit tests.
 
 ## Publish
 
-`main` へのマージごとに [semantic-release](https://semantic-release.gitbook.io/) が Conventional Commits に従ってバージョンを上げ、GitHub Release を作成し、npm に公開します（[Release workflow](.github/workflows/publish.yml)）。
+`main` へのマージごとに [semantic-release](https://semantic-release.gitbook.io/) が Conventional Commits に従ってバージョンを上げ、GitHub Release を作成し、**npm に stage します**（[Release workflow](.github/workflows/publish.yml)）。registry への反映は maintainer が 2FA で approve するまで待ちます。
 
 | PR / コミット prefix | バージョン |
 | --- | --- |
@@ -127,18 +127,39 @@ Live coding CLIs are not required for unit tests.
 
 **Squash merge 推奨** — マージ後のコミットメッセージが PR タイトルになるため、PR タイトルを `feat: …` / `fix: …` 形式にしてください。
 
-セットアップ（初回のみ）:
+### CI（stage）→ maintainer（approve）
+
+1. Release workflow が `npm stage publish` を実行（OIDC / Trusted publishing）
+2. maintainer が npmjs.com または CLI で内容を確認して approve:
+   - Web: npm → `enginebay` → **Staged packages**
+   - CLI: `npm stage list enginebay` → `npm stage approve <stage-id>`（2FA 必須）
+
+`npm stage approve` / `reject` は OIDC 不可。ローカル CLI か npmjs.com から 2FA 付きで実行してください。
+
+### Trusted publishing セットアップ（初回のみ）
 
 1. npm で `enginebay` パッケージを作成（初回 publish 前）
 2. パッケージ Settings → **Trusted publishing** で GitHub Actions を追加:
    - Organization or user: `hskksk`
    - Repository: `enginebay`
-   - Workflow filename: `publish.yml`（`.github/workflows/` 内のファイル名そのもの）
-   - Allowed actions: `npm publish`
-3. （推奨）Settings → Publishing access → **Require two-factor authentication and disallow tokens** — OIDC のみで publish
-4. PR を `main` にマージ → [Release workflow](.github/workflows/publish.yml) が OIDC で publish（`NPM_TOKEN` 不要）
+   - Workflow filename: `publish.yml`（ファイル名のみ。パスは含めない）
+   - Environment name: **空のまま**（GitHub Environment を使わない限り）
+   - Allowed actions: **`npm stage publish` のみ**（`npm publish` はオフ推奨）
+3. （推奨）Settings → Publishing access → **Require two-factor authentication and disallow tokens**
+4. PR を `main` にマージ → Release workflow が stage まで実行
 
-認証は [npm trusted publishers](https://docs.npmjs.com/trusted-publishers)（GitHub Actions OIDC）を使用します。publish 時に provenance が自動付与されます（public repo / public package の場合）。
+認証は [npm trusted publishers](https://docs.npmjs.com/trusted-publishers)（GitHub Actions OIDC）を使用します。stage 時にも provenance が付与されます（public repo / public package の場合）。
+
+### Troubleshooting: `E403 OIDC permission denied for this action`
+
+CI が `npm publish` を呼んでいるのに Trusted publishing で **`npm stage publish` だけ**許可していると、この 403 になります。本 repo は `@semantic-release/exec` 経由で `npm stage publish` を使います。
+
+それでも 403 の場合:
+
+1. npm → Trusted publishing の org/repo/workflow filename が完全一致しているか確認
+2. **Allowed actions** で `npm stage publish` がオンで **Save changes** 済みか確認
+3. Environment name を npm に入れているなら workflow に `environment:` を追加するか、npm 側を空に戻す
+4. `publish.yml` では semantic-release 利用時 **`actions/setup-node` に `registry-url` を付けない**
 
 リリース対象のコミットがない場合（例: 直前の `[skip ci]` リリースコミットのみ）はスキップされます。手動実行は Actions → Release → Run workflow から可能です。
 
