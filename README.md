@@ -133,12 +133,22 @@ Live coding CLIs are not required for unit tests.
 2. パッケージ Settings → **Trusted publishing** で GitHub Actions を追加:
    - Organization or user: `hskksk`
    - Repository: `enginebay`
-   - Workflow filename: `publish.yml`（`.github/workflows/` 内のファイル名そのもの）
-   - Allowed actions: `npm publish`
+   - Workflow filename: `publish.yml`（`.github/workflows/` 内のファイル名そのもの。パスは含めない）
+   - Environment name: **空のまま**（GitHub Environment を使わない限り）
+   - Allowed actions: **`npm publish` にチェック**（2026-05 以降は必須。Save changes を押す）
 3. （推奨）Settings → Publishing access → **Require two-factor authentication and disallow tokens** — OIDC のみで publish
 4. PR を `main` にマージ → [Release workflow](.github/workflows/publish.yml) が OIDC で publish（`NPM_TOKEN` 不要）
 
 認証は [npm trusted publishers](https://docs.npmjs.com/trusted-publishers)（GitHub Actions OIDC）を使用します。publish 時に provenance が自動付与されます（public repo / public package の場合）。
+
+### Troubleshooting: `E403 OIDC permission denied for this action`
+
+build / tarball / provenance まで進んでから PUT で 403 になる場合、pnpm や Node のバージョンではなく **npm 側の Trusted publishing 設定**が workflow と一致していないことが多いです。
+
+1. npm → `enginebay` → Settings → Trusted publishing を開き、上記フィールドが完全一致しているか確認（大文字小文字含む）
+2. **Allowed actions** で `npm publish` がオンで **Save changes** 済みか確認
+3. Environment name を npm に入れているなら、workflow の job に `environment: <name>` を追加するか、npm 側を空に戻す
+4. `publish.yml` では semantic-release 利用時 **`actions/setup-node` に `registry-url` を付けない**（付けると `.npmrc` が OIDC と競合しうる）
 
 リリース対象のコミットがない場合（例: 直前の `[skip ci]` リリースコミットのみ）はスキップされます。手動実行は Actions → Release → Run workflow から可能です。
 
