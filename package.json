@@ -1,6 +1,6 @@
 {
   "name": "enginebay",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "license": "UNLICENSED",
   "description": "Isolated bays for coding-agent CLIs (OpenCode, Claude Code, and later engines).",
   "type": "module",
