@@ -129,8 +129,16 @@ Live coding CLIs are not required for unit tests.
 
 セットアップ（初回のみ）:
 
-1. npm の [Granular Access Token](https://docs.npmjs.com/creating-and-viewing-access-tokens)（Publish 権限）を GitHub リポジトリ secret **`NPM_TOKEN`** に登録
-2. PR を `main` にマージ → Release workflow が走り、`enginebay` が https://www.npmjs.com/package/enginebay に公開される
+1. npm で `enginebay` パッケージを作成（初回 publish 前）
+2. パッケージ Settings → **Trusted publishing** で GitHub Actions を追加:
+   - Organization or user: `hskksk`
+   - Repository: `enginebay`
+   - Workflow filename: `publish.yml`（`.github/workflows/` 内のファイル名そのもの）
+   - Allowed actions: `npm publish`
+3. （推奨）Settings → Publishing access → **Require two-factor authentication and disallow tokens** — OIDC のみで publish
+4. PR を `main` にマージ → [Release workflow](.github/workflows/publish.yml) が OIDC で publish（`NPM_TOKEN` 不要）
+
+認証は [npm trusted publishers](https://docs.npmjs.com/trusted-publishers)（GitHub Actions OIDC）を使用します。publish 時に provenance が自動付与されます（public repo / public package の場合）。
 
 リリース対象のコミットがない場合（例: 直前の `[skip ci]` リリースコミットのみ）はスキップされます。手動実行は Actions → Release → Run workflow から可能です。
 
