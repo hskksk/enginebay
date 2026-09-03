@@ -27,8 +27,8 @@ async function tempDir(prefix: string): Promise<string> {
 
 describe("assertWorkspaceId", () => {
   it("nfc-normalizes, trims, and lowercases", () => {
-    expect(assertWorkspaceId("  Comitia-Mika  ")).toBe("comitia-mika");
-    expect(assertWorkspaceId("comitia-ミカ")).toBe("comitia-ミカ");
+    expect(assertWorkspaceId("  My-App  ")).toBe("my-app");
+    expect(assertWorkspaceId("my-app-ミカ")).toBe("my-app-ミカ");
   });
 
   it("rejects empty, traversal, and path separators", () => {
@@ -68,20 +68,20 @@ describe("prepareWorkspace", () => {
   it("puts a named workspace under XDG data and keeps files across prepares", async () => {
     const hostHome = await tempDir("enginebay-ws-home-");
     const first = await prepareWorkspace({
-      id: "comitia-mika",
+      id: "my-app",
       hostHome,
       hostEnv: { HOME: hostHome },
     });
     expect(first).toEqual({
-      path: join(hostHome, ".local", "share", "enginebay", "workspaces", "comitia-mika"),
-      id: "comitia-mika",
+      path: join(hostHome, ".local", "share", "enginebay", "workspaces", "my-app"),
+      id: "my-app",
       persistent: true,
       ephemeral: false,
     });
     await writeFile(join(first.path, "keep.txt"), "hello\n", "utf8");
 
     const second = await prepareWorkspace({
-      id: "Comitia-Mika",
+      id: "My-App",
       hostHome,
       hostEnv: { HOME: hostHome },
     });

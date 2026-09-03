@@ -1,6 +1,6 @@
 # enginebay design
 
-Isolated bays for coding-agent CLIs. This document is the design of record for the package. Implementation follows it; Comitia product docs do not override it.
+Isolated bays for coding-agent CLIs. This document is the design of record for the package.
 
 Status: **OpenCode and Claude Code implemented.**
 
@@ -17,7 +17,7 @@ Products that drive coding agents (a consensus board, an eval harness, a local o
 
 That layer is **engine knowledge**, not product knowledge. It is also not an OS sandbox: Seatbelt, landlock, bubblewrap, and microVMs constrain a process; they do not know where OpenCode stores `auth.json`.
 
-Comitia currently inlines this for Claude Code (`packages/agent/src/plugins/claude-code.ts`). [prism-data-labs-agent](https://github.com/hskksk/prism-data-labs-agent) inlines a more complete OpenCode isolation story under `eval/`. Both should call one library.
+Prior art in other repositories inlined the same logic for Claude Code and OpenCode. Those call sites should depend on this library instead.
 
 ## 2. Goals
 
@@ -26,27 +26,27 @@ Comitia currently inlines this for Claude Code (`packages/agent/src/plugins/clau
 3. **Provider auth is inherited, narrowly.** The child can call the model. It cannot see the rest of the user's dotfiles by default.
 4. **MCP is session-scoped.** The consumer passes a stdio command; enginebay injects it with the engine's native mechanism. Nothing is written into the user's global MCP config.
 5. **Events are canonical.** Consumers do not parse `stream-json` or `opencode run --format json` themselves.
-6. **The library stays extractable.** Unscoped package name `enginebay`, no imports from `@comitia/*`, no Comitia types in the public API.
+6. **The library is a standalone primitive.** Unscoped package name `enginebay`, no product-specific imports or types in the public API.
 7. **Live engines are not required for unit tests.** Argv, env, and parsers are tested with fixtures. Spawning a real CLI is optional / manual.
 
 ## 3. Non-goals
 
 | Out | Why |
 | --- | --- |
-| Session loop, idle detection, redrive prompts | Product (Comitia design 02 §7) |
+| Session loop, idle detection, redrive prompts | Product |
 | Board MCP semantics, ticks, A2A | Product |
 | Personality, roles, briefing text | Product |
-| Eval cells, judges, playgrounds | prism-data-labs-agent |
-| Minting GitHub App installation tokens | Comitia design 08; pass the token in |
-| Vendoring `opencode` / `claude` binaries | Same policy as Comitia today: CLI on `PATH` |
+| Eval cells, judges, playgrounds | Eval harness (consumer) |
+| Minting GitHub App installation tokens | Consumer; pass the token in |
+| Vendoring `opencode` / `claude` binaries | CLI on `PATH` |
 | Being a general OS sandbox | `srt`, `jai`, Docker `sbx` already exist; they may become *backends* |
 | Implementing Cursor Agent / Antigravity / Gemini in the first slice | Catalog entries wait until a consumer needs them |
-| `opencode serve` / long-lived attach | Each `run()` is a new process, matching Comitia's Claude plugin |
+| `opencode serve` / long-lived attach | Each `run()` is a new process |
 
 ## 4. Concepts
 
 ```
-consumer (Comitia adapter, eval runner, …)
+consumer (orchestrator, eval runner, adapter, …)
     │  prompt, workspace (id | path | ephemeral), MCP stdio, extraEnv
     ▼
 enginebay bay
@@ -143,24 +143,24 @@ export function doctor(engine: EngineId, host?: {
 }): Promise<DoctorReport>;
 ```
 
-### 5.1 Mapping to Comitia `EnginePlugin`
+### 5.1 Consumer adapter pattern
 
-Comitia keeps `EnginePlugin` (`start` / `run` / `report` / `stop` / `dispose`). The plugin becomes a thin wrapper:
+Most host applications already have a session or plugin interface (`start` / `run` / `stop` / `dispose`, or similar). The adapter should stay thin:
 
-| `EnginePlugin` | enginebay |
+| Typical adapter hook | enginebay |
 | --- | --- |
-| `start(session)` | `openBay({ workspaceId or workDir, mcp, instructions, extraEnv })` |
-| `run(prompt)` | iterate `bay.run(prompt)`, map `BayEvent` → `TraceEvent` |
-| `report()` | last `tokens` event |
-| `stop()` | `abort()` |
-| `dispose()` | `close()` |
-| `updateGithubAuth` | `bay.updateExtraEnv(extraEnv, git?)` |
+| start session | `openBay({ workspaceId or workDir, mcp, instructions, extraEnv })` |
+| run turn | iterate `bay.run(prompt)`, map `BayEvent` → product trace events |
+| usage / billing | last `tokens` event |
+| cancel | `abort()` |
+| teardown | `close()` |
+| refresh GitHub auth | `bay.updateExtraEnv(extraEnv, git?)` |
 
-Comitia continues to own GitHub minting, the day loop, and prompt constants (`TOOLSET_OVERVIEW`, environment prompt). Those strings are passed in as `instructions`; enginebay does not import them.
+The consumer owns GitHub minting, scheduling loops, and prompt text. Those strings are passed in as `instructions`; enginebay does not import them.
 
-### 5.2 Mapping to prism eval
+### 5.2 Eval harness integration
 
-Eval keeps playgrounds, criteria, and collectors. It replaces `buildOpencodeRunArgs` / `buildEvalCliEnv` / stdout adapters with `openBay({ engine: "opencode", workDir: playground })` or a named `workspaceId`. Isolation must remain equivalent: no host `~/.config/opencode`, per-run session DB, host auth still visible.
+Eval runners keep playgrounds, criteria, and collectors. They replace bespoke argv/env builders and stdout adapters with `openBay({ engine: "opencode", workDir: playground })` or a named `workspaceId`. Isolation must remain equivalent: no host `~/.config/opencode`, per-run session DB, host auth still visible.
 
 ## 6. Isolation backends
 
@@ -183,11 +183,11 @@ Shared rules:
 - `OPENCODE_DISABLE_GLOBAL_CONFIG=1`
 - `OPENCODE_DISABLE_CLAUDE_CODE=1` (do not pick up a host Claude integration).
 - `OPENCODE_CONFIG_CONTENT` = JSON with `mcp` and `instructions` (path to the temp markdown).
-- Auth: attach host `~/.local/share/opencode` (`auth.json` / `auth-v2.json`) without pointing `XDG_DATA_HOME` at an empty temp that hides login. Prefer a dedicated data dir plus a symlink of the auth files, as in prism `eval/util/eval-cli-env.ts`.
+- Auth: attach host `~/.local/share/opencode` (`auth.json` / `auth-v2.json`) without pointing `XDG_DATA_HOME` at an empty temp that hides login. Prefer a dedicated data dir plus a symlink of the auth files.
 - argv: `opencode run --format json --dangerously-skip-permissions --dir <workDir> [--model <id>] <prompt>`
 - Do not use the older PoC flag `--auto`.
 
-**Claude Code** (second driver; behavior already proven in Comitia)
+**Claude Code** (second driver)
 
 - Keep real `HOME` so Keychain / `claude login` still work. Do not use `--bare`.
 - `--mcp-config <file> --strict-mcp-config --setting-sources project,local`
@@ -218,7 +218,7 @@ IDs: one path segment, NFC, lowercased, max 80 characters. Unicode allowed. `/`,
 
 Do not pass `workDir` and `workspaceId` together. `prepareWorkspace()` is the same helper `openBay` uses, for consumers that need the path before spawn (clone, then `openBay({ workDir })`).
 
-Comitia default: `workspaceId = comitia-{agent-name}` (config key, engine-independent). `COMITIA_WORK_DIR` remains an explicit-path override.
+Consumers typically derive `workspaceId` from their own config key (for example `my-app-{agent-name}`) or pass an explicit `workDir` when they manage the tree directly.
 
 ## 7. Credentials
 
@@ -227,7 +227,7 @@ Comitia default: `workspaceId = comitia-{agent-name}` (config key, engine-indepe
 | Engine | Host source | Attach method |
 | --- | --- | --- |
 | OpenCode | `~/.local/share/opencode/auth.json` (and `auth-v2.json`) | symlink or bind into the isolated data dir |
-| Claude Code | Keychain and/or `~/.claude` credentials | keep host `HOME`; copy only what Comitia already copies |
+| Claude Code | Keychain and/or `~/.claude` credentials | keep host `HOME`; narrow credential attach only |
 
 If attach fails, `openBay` still succeeds (the CLI may error on first `run()`). `doctor()` reports the miss in English so UIs can tell the human to log in.
 
@@ -235,9 +235,9 @@ API keys already in the host environment (`ANTHROPIC_API_KEY`, …) pass through
 
 ### 7.2 GitHub (do not inherit by default)
 
-Host `GH_TOKEN` / `GITHUB_TOKEN` are **stripped**. Comitia mints a short-lived installation token and passes it in `extraEnv`. enginebay may write an isolated `.gitconfig` into the runtime dir when those variables are present (HTTPS `insteadOf`, committer name via options if we add `git?: { committerName }`).
+Host `GH_TOKEN` / `GITHUB_TOKEN` are **stripped**. The consumer mints a short-lived installation token (or similar) and passes it in `extraEnv`. enginebay may write an isolated `.gitconfig` into the runtime dir when those variables are present (HTTPS `insteadOf`, committer name via options if we add `git?: { committerName }`).
 
-enginebay never logs token values. Parsers redact `ghs_`, `github_pat_`, and `Bearer` in event payloads (same policy as Comitia `trace-format.ts`).
+enginebay never logs token values. Parsers redact `ghs_`, `github_pat_`, and `Bearer` in event payloads.
 
 ### 7.3 What must not leak
 
@@ -247,14 +247,14 @@ enginebay never logs token values. Parsers redact `ghs_`, `github_pat_`, and `Be
 
 ## 8. MCP injection
 
-The consumer supplies stdio `{ command, args, env }`. enginebay never puts board URLs or agent tokens into a user-global file.
+The consumer supplies stdio `{ command, args, env }`. enginebay never puts service URLs or agent tokens into a user-global file.
 
 | Engine | Mechanism |
 | --- | --- |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → `mcp.<name> = { type: "local", command: [command, ...args], enabled: true, environment }` |
 | Claude Code | temp `mcp-config.json` + `--mcp-config` + `--strict-mcp-config` |
 
-Default server name is `enginebay` so products are not hardcoded. Comitia can pass `name: "comitia-board"` to keep existing tool-name prefixes if needed. Parsers strip known MCP prefixes (`mcp__[^_]+__`) when emitting `tool`.
+Default server name is `enginebay` so products are not hardcoded. Consumers may pass a custom `name` (for example `board-mcp`) to control tool-name prefixes. Parsers strip known MCP prefixes (`mcp__[^_]+__`) when emitting `tool`.
 
 ## 9. Instructions
 
@@ -276,22 +276,21 @@ Vendors keep changing stdout. The public stream is `BayEvent` only.
 | `diagnostic` | Non-JSON stderr/stdout the parser skipped |
 | `exit` | Process exit code, always last |
 
-No `run_start` / `continue_decision`: those are consumer session-loop events (Comitia M20). Comitia maps `BayEvent` → `TraceEvent` and adds adapter kinds itself.
+No `run_start` / `continue_decision`: those are consumer session-loop events. The consumer maps `BayEvent` → its own trace model and adds adapter kinds itself.
 
 OpenCode v1 parser reads `opencode run --format json` NDJSON (`text`, `reasoning`, `tool_use`, `step_finish`). It does **not** require the eval collector plugin or `opencode export`. If stdout is too thin for thinking/tools, a later slice may add export as a fallback — not in v1.
 
-Claude parser reads `claude --output-format stream-json` (`assistant` thinking/text/`tool_use`, `user` `tool_result`). Comitia maps `BayEvent` → traces and keeps remaining-budget parsing on the product side.
+Claude parser reads `claude --output-format stream-json` (`assistant` thinking/text/`tool_use`, `user` `tool_result`). Remaining-budget and other product-specific fields stay on the consumer side.
 
-## 11. Engine catalog and slices
+## 11. Engine catalog
 
-Implementation order inside this package:
+Implemented drivers:
 
-1. **Types + `env` isolation helpers + `doctor` stubs** (no spawn).
-2. **OpenCode driver** — argv, config JSON, auth attach, JSON parser, tests with fixture transcripts.
-3. **Claude Code driver** — extract from Comitia plugin; Comitia wrapper shrinks.
-4. **Cursor / Gemini** — when prism or Comitia needs them; prism already has launchers to copy.
+1. **Types + `env` isolation helpers + `doctor`**
+2. **OpenCode driver** — argv, config JSON, auth attach, JSON parser, fixture tests
+3. **Claude Code driver** — argv, MCP config, stream-json parser, fixture tests
 
-Comitia product work that *consumes* slice 2: allow `opencode` in `ENGINES`, wire `createEnginePlugin`, doctor, English+Japanese UI labels as required by Comitia. That work stays in `@comitia/agent` / `@comitia/shared`, not here.
+Future: **Cursor / Gemini** when a consumer needs them.
 
 ## 12. Testing
 
@@ -308,27 +307,19 @@ Test doubles: a fake `opencode` on `PATH` that writes stdin/env and prints fixtu
 
 | Item | Choice |
 | --- | --- |
-| npm name | `enginebay` (unscoped, already unused on the registry as of 2026-09) |
+| npm name | `enginebay` (unscoped) |
 | Repository | [hskksk/enginebay](https://github.com/hskksk/enginebay) |
 | Language | TypeScript strict, NodeNext |
-| Dependencies | Node stdlib first. No `@comitia/*`. |
+| Dependencies | Node stdlib first. No product-specific scoped packages. |
 | Engines field | Node 22+ (LTS) |
 | License | UNLICENSED until an OSS license is chosen |
 
 `build` / `test` / `typecheck` run `tsc` and Vitest.
 
-Extraction checklist:
-
-1. Freeze the public API.
-2. Move the directory to `hskksk/enginebay`. **Done** (this repository).
-3. Publish `enginebay`.
-4. Comitia depends on the published (or git) package instead of `workspace:*`.
-5. prism-data-labs-agent depends on the same package and deletes its duplicated `eval` drivers.
-
 ## 14. Security notes
 
 - Isolation in v1 is **cooperative**. A CLI that ignores XDG can still read `$HOME`. Stronger backends (§6.2) are how we raise that bar.
-- `env` isolation is still enough for the original product rule: “do not leave MCP or session files in the user's standard install.”
+- `env` isolation is still enough for the core rule: “do not leave MCP or session files in the user's standard install.”
 - Tokens in `extraEnv` must not appear in `BayEvent` payloads or thrown `Error` messages.
 - `workDir` is trusted by the consumer. enginebay does not try to prevent the model from editing that tree.
 
@@ -340,13 +331,9 @@ Closed for v1 OpenCode:
 2. **`git.committerName`** — optional on `OpenBayOptions`. Isolated `.gitconfig` is written when `extraEnv` has a GitHub token. Email is `enginebay@users.noreply.github.com`.
 3. **Auth attach on Windows** — v1 is POSIX-first (`~/.local/share/opencode`).
 4. **Event versioning** — no `v` field on `BayEvent` until a second parser exists.
-5. **License** — UNLICENSED until an OSS license is chosen. This extraction does not pick one.
+5. **License** — UNLICENSED until an OSS license is chosen.
 
 ## 16. References
 
-- Comitia adapter SPI: `packages/agent/src/plugins/types.ts`, Claude plugin: `packages/agent/src/plugins/claude-code.ts`
-- Comitia engine connection: `docs/design/02-agent-connection.md` §6, tech notes: `docs/design/03-tech-selection.md` §1
-- Comitia GitHub credentials: `docs/design/08-agent-github-credentials.md`
-- OpenCode PoC: `poc/01-tool-injection/src/run-opencode.ts`
-- prism-data-labs-agent: `eval/util/eval-cli-env.ts`, `eval/config/resolve-primary-agent.ts` (`buildOpencodeRunArgs`), `eval/util/session-stream.ts`
+- [prism-data-labs-agent](https://github.com/hskksk/prism-data-labs-agent) — prior OpenCode eval isolation (to be replaced by this package)
 - Isolation catalog (context, not dependencies): [wincent gist, 2026-05](https://gist.github.com/wincent/2752d8d97727577050c043e4ff9e386e)

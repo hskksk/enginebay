@@ -17,6 +17,6 @@ describe("writeIsolatedGitconfig", () => {
     expect(text).toContain("name = bay-bot");
     expect(text).toContain("email = enginebay@users.noreply.github.com");
     expect(text).toContain("https://x-access-token:ghs_secret@github.com/");
-    expect(text).not.toContain("comitia");
+    expect(text).not.toMatch(/email = (?!enginebay@users\.noreply\.github\.com)/);
   });
 });
