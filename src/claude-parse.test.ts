@@ -19,7 +19,7 @@ describe("parseClaudeLine", () => {
             {
               type: "tool_use",
               id: "tool-1",
-              name: "mcp__comitia-board__get_briefing",
+              name: "mcp__board-mcp__get_briefing",
               input: {},
             },
           ],

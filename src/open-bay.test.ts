@@ -73,7 +73,7 @@ describe("openBay OpenCode isolation", () => {
         command: process.execPath,
         args: ["/tmp/mcp.js"],
         env: { BOARD_URL: "http://127.0.0.1:9" },
-        name: "comitia-board",
+        name: "board-mcp",
       },
       extraEnv: {
         ENGINEBAY_DUMP_DIR: dumpDir,
@@ -132,7 +132,7 @@ describe("openBay OpenCode isolation", () => {
       mcp: Record<string, { command: string[] }>;
       instructions: string[];
     };
-    expect(config.mcp["comitia-board"]?.command).toEqual([
+    expect(config.mcp["board-mcp"]?.command).toEqual([
       process.execPath,
       "/tmp/mcp.js",
     ]);
@@ -239,7 +239,7 @@ describe("openBay Claude Code isolation", () => {
         command: process.execPath,
         args: ["/tmp/mcp.js"],
         env: { BOARD_URL: "http://127.0.0.1:9" },
-        name: "comitia-board",
+        name: "board-mcp",
       },
       extraEnv: {
         ENGINEBAY_DUMP_DIR: dumpDir,
@@ -272,7 +272,7 @@ describe("openBay Claude Code isolation", () => {
     const mcp = JSON.parse(await readFile(mcpPath, "utf8")) as {
       mcpServers: Record<string, { alwaysLoad?: boolean }>;
     };
-    expect(mcp.mcpServers["comitia-board"]?.alwaysLoad).toBe(true);
+    expect(mcp.mcpServers["board-mcp"]?.alwaysLoad).toBe(true);
 
     const dumped = JSON.parse(
       await readFile(join(dumpDir, "env.json"), "utf8"),
@@ -328,14 +328,14 @@ describe("openBay workspaces", () => {
     const hostEnv = { HOME: hostHome, PATH: process.env.PATH };
     const bay = await openBay({
       engine: "claude-code",
-      workspaceId: "comitia-mika",
+      workspaceId: "my-app",
       hostHome,
       hostEnv,
     });
-    expect(bay.workspace.id).toBe("comitia-mika");
+    expect(bay.workspace.id).toBe("my-app");
     expect(bay.workspace.persistent).toBe(true);
     expect(bay.workDir).toBe(
-      join(hostHome, ".local", "share", "enginebay", "workspaces", "comitia-mika"),
+      join(hostHome, ".local", "share", "enginebay", "workspaces", "my-app"),
     );
     await writeFile(join(bay.workDir, "keep.txt"), "named\n", "utf8");
     await bay.close();
@@ -343,7 +343,7 @@ describe("openBay workspaces", () => {
 
     const again = await openBay({
       engine: "opencode",
-      workspaceId: "Comitia-Mika",
+      workspaceId: "My-App",
       hostHome,
       hostEnv,
     });

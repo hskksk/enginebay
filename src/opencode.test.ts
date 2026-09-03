@@ -73,13 +73,13 @@ describe("buildOpencodeMcpConfig", () => {
         command: "node",
         args: ["server.mjs"],
         env: {},
-        name: "comitia-board",
+        name: "board-mcp",
       },
       instructionsPath: "/tmp/runtime/instructions.md",
     });
     expect(config).toEqual({
       mcp: {
-        "comitia-board": {
+        "board-mcp": {
           type: "local",
           command: ["node", "server.mjs"],
           enabled: true,

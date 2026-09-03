@@ -26,7 +26,7 @@ export type PreparedWorkspace = {
 
 /**
  * Validate a workspace id. IDs are a single path segment, NFC, lowercased.
- * Unicode is allowed so product names like `comitia-ミカ` work.
+ * Unicode is allowed so ids like `my-app-ミカ` work.
  */
 export function assertWorkspaceId(id: string): string {
   const normalized = id.normalize("NFC").trim().toLowerCase();

@@ -4,7 +4,7 @@ Isolated **bays** for coding-agent CLIs.
 
 enginebay runs a host-installed coding agent (OpenCode, Claude Code, and later Cursor Agent / Gemini CLI) as a library: one process, one workspace, one MCP injection, a canonical event stream. It keeps the engine's **config and session records** out of the user's ordinary install, and **inherits only provider login** from the host.
 
-It is not a product, a session loop, or a sandbox OS. Host applications — Comitia, eval harnesses, other adapters — stay thin.
+It is not a product, a session loop, or a sandbox OS. Host applications — orchestrators, eval harnesses, adapters — stay thin.
 
 **Status:** OpenCode and **Claude Code** drivers are implemented (`openBay`, `doctor`, `env` isolation). See [docs/design.md](docs/design.md).
 
@@ -16,7 +16,7 @@ enginebay owns that knowledge. A consumer owns *when* to run, *which* prompt, *w
 
 ## What it does
 
-| Concern | enginebay | Consumer (e.g. Comitia) |
+| Concern | enginebay | Consumer |
 | --- | --- | --- |
 | Spawn the CLI headless | yes | — |
 | Isolate config / session DB | yes | — |
@@ -38,13 +38,13 @@ if (!check.ok) throw new Error(check.message);
 
 const bay = await openBay({
   engine: "opencode",
-  workspaceId: "comitia-mika",
+  workspaceId: "my-project",
   mcp: {
     command: process.execPath,
     args: ["/path/to/mcp-proxy"],
-    env: { BOARD_URL: "http://127.0.0.1:8787" },
+    env: { API_URL: "http://127.0.0.1:8787" },
   },
-  instructions: "You are a participant on a consensus board. Tools are the only output that counts.",
+  instructions: "Follow the tool protocol. Tool calls are the primary output.",
   extraEnv: {
     // Optional. Host GH_TOKEN is stripped unless you pass one.
     GH_TOKEN: mintedInstallationToken,
@@ -70,7 +70,7 @@ Each `run()` is a **fresh CLI process**. Conversation continuity is the consumer
 | `workspaceId: "…"` | `$XDG_DATA_HOME/enginebay/workspaces/<id>` (default `~/.local/share/…`) | keeps it |
 | `workDir: "/path"` | that path (mkdir if needed) | keeps it |
 
-Do not pass both. IDs are a single path segment, NFC, lowercased; unicode is allowed (`comitia-ミカ`). Isolation dirs (engine config / session DB) stay disposable either way — a named workspace is the **coding tree**, not the engine's XDG.
+Do not pass both. IDs are a single path segment, NFC, lowercased; unicode is allowed (`my-app-ミカ`). Isolation dirs (engine config / session DB) stay disposable either way — a named workspace is the **coding tree**, not the engine's XDG.
 
 ## Engines
 
@@ -144,14 +144,12 @@ Live coding CLIs are not required for unit tests.
 
 ## Repository
 
-This is [hskksk/enginebay](https://github.com/hskksk/enginebay). The npm name is the unscoped **`enginebay`**, not `@comitia/enginebay`. It was extracted from the Comitia monorepo (`packages/enginebay`).
-
-Comitia still vendors a copy until it depends on this repository (or a published package) instead of `workspace:*`.
+Standalone npm package: unscoped name **`enginebay`**, repository [hskksk/enginebay](https://github.com/hskksk/enginebay).
 
 ## Documentation
 
-- [Design](docs/design.md) — goals, API, isolation, events, consumers, extraction.
+- [Design](docs/design.md) — goals, API, isolation, events, consumers.
 
 ## License
 
-UNLICENSED. An OSS license will be chosen separately; this extraction does not pick one.
+UNLICENSED. An OSS license will be chosen separately.
