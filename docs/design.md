@@ -321,7 +321,7 @@ Extraction checklist:
 
 1. Freeze the public API.
 2. Move the directory to `hskksk/enginebay`. **Done** (this repository).
-3. Publish `enginebay`.
+3. Publish `enginebay`. **Done** (GitHub Release → npm via `.github/workflows/publish.yml`; set repo secret `NPM_TOKEN`).
 4. Comitia depends on the published (or git) package instead of `workspace:*`.
 5. prism-data-labs-agent depends on the same package and deletes its duplicated `eval` drivers.
 

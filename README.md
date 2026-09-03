@@ -93,6 +93,16 @@ Host `GH_TOKEN` / `GITHUB_TOKEN` are removed from the child environment unless t
 
 OS-level sandboxes (`jai`, Anthropic `srt`, Docker `sbx`) are **optional backends**, not this package's identity. See [design §6](docs/design.md#6-isolation-backends).
 
+## Install
+
+```bash
+npm install enginebay
+# or
+pnpm add enginebay
+```
+
+Requires Node.js 22+.
+
 ## Development
 
 ```bash
@@ -103,6 +113,16 @@ pnpm build
 ```
 
 Live coding CLIs are not required for unit tests.
+
+## Publish
+
+Publishing is automated when a [GitHub Release](https://github.com/hskksk/enginebay/releases) is published:
+
+1. Bump `version` in `package.json` and commit.
+2. Create a release whose tag matches that version (e.g. `v0.1.0`).
+3. The [Publish workflow](.github/workflows/publish.yml) runs tests and runs `pnpm publish`.
+
+Add an npm [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens) with **Publish** scope as the repository secret `NPM_TOKEN`.
 
 ## Repository
 
