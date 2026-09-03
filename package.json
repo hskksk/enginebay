@@ -12,7 +12,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "docs"],
+  "files": [
+    "dist",
+    "README.md",
+    "docs"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hskksk/enginebay.git"
@@ -35,7 +39,11 @@
     "access": "public"
   },
   "devDependencies": {
+    "@semantic-release/git": "^11.0.1",
+    "@semantic-release/github": "^12.0.9",
+    "@semantic-release/npm": "^13.1.5",
     "@types/node": "^22.0.0",
+    "semantic-release": "^25.0.9",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }

@@ -116,13 +116,23 @@ Live coding CLIs are not required for unit tests.
 
 ## Publish
 
-Publishing is automated when a [GitHub Release](https://github.com/hskksk/enginebay/releases) is published:
+`main` へのマージごとに [semantic-release](https://semantic-release.gitbook.io/) が Conventional Commits に従ってバージョンを上げ、GitHub Release を作成し、npm に公開します（[Release workflow](.github/workflows/publish.yml)）。
 
-1. Bump `version` in `package.json` and commit.
-2. Create a release whose tag matches that version (e.g. `v0.1.0`).
-3. The [Publish workflow](.github/workflows/publish.yml) runs tests and runs `pnpm publish`.
+| PR / コミット prefix | バージョン |
+| --- | --- |
+| `fix:` | patch（例 `0.1.0` → `0.1.1`） |
+| `feat:` | minor（例 `0.1.0` → `0.2.0`） |
+| `BREAKING CHANGE:` または `feat!:` | major |
+| その他（`chore:` `docs:` `ci:` など） | patch |
 
-Add an npm [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens) with **Publish** scope as the repository secret `NPM_TOKEN`.
+**Squash merge 推奨** — マージ後のコミットメッセージが PR タイトルになるため、PR タイトルを `feat: …` / `fix: …` 形式にしてください。
+
+セットアップ（初回のみ）:
+
+1. npm の [Granular Access Token](https://docs.npmjs.com/creating-and-viewing-access-tokens)（Publish 権限）を GitHub リポジトリ secret **`NPM_TOKEN`** に登録
+2. PR を `main` にマージ → Release workflow が走り、`enginebay` が https://www.npmjs.com/package/enginebay に公開される
+
+リリース対象のコミットがない場合（例: 直前の `[skip ci]` リリースコミットのみ）はスキップされます。手動実行は Actions → Release → Run workflow から可能です。
 
 ## Repository
 
