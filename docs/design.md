@@ -316,7 +316,7 @@ Test doubles: a fake `opencode` on `PATH` that writes stdin/env and prints fixtu
 
 `build` / `test` / `typecheck` run `tsc` and Vitest.
 
-Publishing runs on merge to `main` via semantic-release and [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC, `.github/workflows/publish.yml`). See [README § Publish](../README.md#publish).
+Publishing runs on merge to `main` via semantic-release → `npm stage publish` (OIDC, `.github/workflows/publish.yml`); a maintainer approves on npm before the version goes live. See [README § Publish](../README.md#publish).
 
 ## 14. Security notes
 

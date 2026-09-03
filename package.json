@@ -39,6 +39,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@semantic-release/exec": "^7.1.0",
     "@semantic-release/git": "^11.0.1",
     "@semantic-release/github": "^12.0.9",
     "@semantic-release/npm": "^13.1.5",

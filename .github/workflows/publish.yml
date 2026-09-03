@@ -36,8 +36,8 @@ jobs:
           node-version: 22.14.0
           cache: pnpm
 
-      # Trusted publishing requires npm CLI >= 11.5.1 (Node >= 22.14.0).
-      - run: npm install -g npm@^11.5.1
+      # npm stage requires CLI >= 11.15.0; trusted publishing needs >= 11.5.1 and Node >= 22.14.0.
+      - run: npm install -g npm@^11.15.0
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
