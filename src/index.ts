@@ -1,5 +1,10 @@
 export { doctor, openBay } from "./open-bay.js";
 export {
+  isLaunchEngineId,
+  LAUNCH_ENGINE_IDS,
+  launchEngine,
+} from "./launch.js";
+export {
   assertWorkspaceId,
   discardWorkspace,
   namedWorkspacePath,
@@ -19,4 +24,8 @@ export type {
   McpStdio,
   OpenBayOptions,
 } from "./types.js";
+export type {
+  LaunchEngineId,
+  LaunchEngineOptions,
+} from "./launch.js";
 export { ENGINE_IDS, ISOLATION_KINDS, isEngineId } from "./types.js";

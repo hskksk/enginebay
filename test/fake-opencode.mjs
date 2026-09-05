@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 if (process.argv.includes("--version")) {
@@ -24,6 +30,17 @@ if (dumpDir) {
   } catch {
     isolatedCursorFiles = [];
   }
+  const codexHome = process.env.CODEX_HOME ?? "";
+  let codexFiles = [];
+  try {
+    codexFiles = readdirSync(codexHome);
+  } catch {
+    codexFiles = [];
+  }
+  const codexConfigPath = join(codexHome, "config.toml");
+  const mcpConfigIndex = process.argv.indexOf("--mcp-config");
+  const mcpConfigPath =
+    mcpConfigIndex >= 0 ? process.argv[mcpConfigIndex + 1] : undefined;
   writeFileSync(
     join(dumpDir, "argv.json"),
     `${JSON.stringify(process.argv.slice(2), null, 2)}\n`,
@@ -49,6 +66,15 @@ if (dumpDir) {
         CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,
         MCP_CONNECTION_NONBLOCKING: process.env.MCP_CONNECTION_NONBLOCKING,
         CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR,
+        CODEX_HOME: process.env.CODEX_HOME,
+        codexFiles,
+        codexConfig: existsSync(codexConfigPath)
+          ? readFileSync(codexConfigPath, "utf8")
+          : undefined,
+        mcpConfig:
+          mcpConfigPath && existsSync(mcpConfigPath)
+            ? readFileSync(mcpConfigPath, "utf8")
+            : undefined,
         isolatedShareFiles,
         isolatedCursorFiles,
       },

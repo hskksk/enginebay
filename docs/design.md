@@ -2,7 +2,8 @@
 
 Isolated bays for coding-agent CLIs. This document is the design of record for the package.
 
-Status: **OpenCode, Claude Code, and Cursor Agent implemented.**
+Status: **OpenCode, Claude Code, and Cursor Agent headless bays implemented.
+Codex, OpenCode, Claude Code, and Cursor Agent interactive launch implemented.**
 
 ## 1. Problem
 
@@ -28,6 +29,9 @@ Prior art in other repositories inlined the same logic for Claude Code and OpenC
 5. **Events are canonical.** Consumers do not parse `stream-json` or `opencode run --format json` themselves.
 6. **The library is a standalone primitive.** Unscoped package name `enginebay`, no product-specific imports or types in the public API.
 7. **Live engines are not required for unit tests.** Argv, env, and parsers are tested with fixtures. Spawning a real CLI is optional / manual.
+8. **Interactive use is a first-class entry point.** `enginebay codex
+   <options>` (and the other implemented engines) preserves the native terminal
+   while applying enginebay's config, auth, and environment isolation.
 
 ## 3. Non-goals
 
@@ -141,9 +145,37 @@ export function doctor(engine: EngineId, host?: {
   env?: NodeJS.ProcessEnv;
   home?: string;
 }): Promise<DoctorReport>;
+
+export type LaunchEngineId =
+  | "codex"
+  | "opencode"
+  | "claude-code"
+  | "cursor-agent";
+
+export function launchEngine(options: {
+  engine: LaunchEngineId;
+  args?: string[];        // forwarded to the native CLI
+  workDir?: string;       // defaults to process.cwd()
+  mcp?: McpStdio;
+  extraEnv?: Record<string, string>;
+  git?: { committerName?: string };
+}): Promise<number>;      // native exit status
 ```
 
-### 5.1 Consumer adapter pattern
+### 5.1 Interactive launcher
+
+The package exposes a `bin` named `enginebay`. Its first positional argument
+selects the engine; all remaining arguments belong to that engine. Wrapper
+options are intentionally limited to top-level help/version so vendor flags do
+not need to be duplicated or kept in sync.
+
+`launchEngine()` uses inherited stdio rather than parsing output. It installs
+temporary engine config, forwards termination signals, returns the child exit
+status, and removes temporary state after the child exits. The current
+headless-only event contract remains unchanged; Codex does not become an
+`openBay()` engine until a canonical Codex event parser is implemented.
+
+### 5.2 Consumer adapter pattern
 
 Most host applications already have a session or plugin interface (`start` / `run` / `stop` / `dispose`, or similar). The adapter should stay thin:
 
@@ -158,7 +190,7 @@ Most host applications already have a session or plugin interface (`start` / `ru
 
 The consumer owns GitHub minting, scheduling loops, and prompt text. Those strings are passed in as `instructions`; enginebay does not import them.
 
-### 5.2 Eval harness integration
+### 5.3 Eval harness integration
 
 Eval runners keep playgrounds, criteria, and collectors. They replace bespoke argv/env builders and stdout adapters with `openBay({ engine: "opencode", workDir: playground })` or a named `workspaceId`. Isolation must remain equivalent: no host `~/.config/opencode`, per-run session DB, host auth still visible.
 
@@ -206,6 +238,18 @@ Shared rules:
 - Prefer the unambiguous `cursor-agent` binary; fall back to `agent` when that is what is on `PATH`.
 - The CLI has no `--append-system-prompt`. enginebay prepends `instructions` to the prompt. Do not write `AGENTS.md` into `workDir`.
 - Do not pass `--continue` / `--resume`. Each `run()` is a new process.
+
+**Codex (interactive launcher)**
+
+- Set `CODEX_HOME` to a disposable directory containing an enginebay-owned
+  `config.toml`.
+- Attach only host `~/.codex/auth.json`; do not copy host config, sessions,
+  history, or rollout logs.
+- Write an optional stdio server under `[mcp_servers.<name>]`.
+- Keep the real `HOME` for platform credential stores while isolating Codex's
+  own state through `CODEX_HOME`.
+- Forward native argv unchanged. The interactive launcher does not force an
+  approval or sandbox policy; callers may select those through Codex flags.
 
 ### 6.2 Later backends (not v1)
 
@@ -305,6 +349,8 @@ Implemented drivers:
 2. **OpenCode driver** — argv, config JSON, auth attach, JSON parser, fixture tests
 3. **Claude Code driver** — argv, MCP config, stream-json parser, fixture tests
 4. **Cursor Agent driver** — argv, isolated `CURSOR_CONFIG_DIR` MCP, auth attach, stream-json parser, fixture tests
+5. **Interactive launcher** — Codex plus the three headless engines, inherited
+   terminal, native argv/exit status, signal forwarding, disposable config
 
 Future: **Gemini** when a consumer needs it.
 
