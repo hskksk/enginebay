@@ -19,11 +19,17 @@ import {
 } from "./opencode.js";
 import { parseOpencodeLine, redactBayEvent } from "./opencode-parse.js";
 import { openClaudeBay } from "./claude-bay.js";
+import { openCursorBay } from "./cursor-bay.js";
 import {
   CLAUDE_COMMAND,
   CLAUDE_COMMAND_ALIASES,
   claudeAuthPresent,
 } from "./claude.js";
+import {
+  CURSOR_COMMAND,
+  CURSOR_COMMAND_ALIASES,
+  cursorAuthPresent,
+} from "./cursor.js";
 import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
@@ -195,7 +201,11 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
   }
   const hostEnv = options.hostEnv ?? process.env;
   const hostHome = resolveHostHome(hostEnv, options.hostHome);
-  if (options.engine !== "claude-code" && options.engine !== "opencode") {
+  if (
+    options.engine !== "claude-code" &&
+    options.engine !== "opencode" &&
+    options.engine !== "cursor-agent"
+  ) {
     throw new Error(
       `enginebay: engine "${options.engine}" is not implemented yet`,
     );
@@ -211,6 +221,9 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
   });
   if (options.engine === "claude-code") {
     return openClaudeBay(options, hostEnv, hostHome, workspace);
+  }
+  if (options.engine === "cursor-agent") {
+    return openCursorBay(options, hostEnv, hostHome, workspace);
   }
 
   const runtimeDir = await mkdtemp(join(tmpdir(), "enginebay-runtime-"));
@@ -269,6 +282,9 @@ export async function doctor(
   const home = resolveHostHome(env, host?.home);
   if (engine === "claude-code") {
     return doctorClaude(env, home);
+  }
+  if (engine === "cursor-agent") {
+    return doctorCursor(env, home);
   }
   if (engine !== "opencode") {
     return {
@@ -332,4 +348,32 @@ function doctorClaude(
     ? "claude CLI is not on PATH"
     : `claude is on PATH; ${auth.detail}`;
   return { ok, engine: "claude-code", cli, auth, message };
+}
+
+function doctorCursor(
+  env: NodeJS.ProcessEnv,
+  home: string,
+): import("./types.js").DoctorReport {
+  let command = CURSOR_COMMAND;
+  let found = false;
+  let version: string | undefined;
+  for (const candidate of CURSOR_COMMAND_ALIASES) {
+    if (commandExists(candidate, env)) {
+      command = candidate;
+      found = true;
+      version = readCommandVersion(candidate, env);
+      break;
+    }
+  }
+  const auth = cursorAuthPresent(home, env);
+  const cli = {
+    found,
+    command,
+    ...(version ? { version } : {}),
+  };
+  const ok = found;
+  const message = !found
+    ? "cursor-agent CLI is not on PATH"
+    : `cursor-agent is on PATH; ${auth.detail}`;
+  return { ok, engine: "cursor-agent", cli, auth, message };
 }

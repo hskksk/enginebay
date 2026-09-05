@@ -2,15 +2,15 @@
 
 Isolated **bays** for coding-agent CLIs.
 
-enginebay runs a host-installed coding agent (OpenCode, Claude Code, and later Cursor Agent / Gemini CLI) as a library: one process, one workspace, one MCP injection, a canonical event stream. It keeps the engine's **config and session records** out of the user's ordinary install, and **inherits only provider login** from the host.
+enginebay runs a host-installed coding agent (OpenCode, Claude Code, Cursor Agent, and later Gemini CLI) as a library: one process, one workspace, one MCP injection, a canonical event stream. It keeps the engine's **config and session records** out of the user's ordinary install, and **inherits only provider login** from the host.
 
 It is not a product, a session loop, or a sandbox OS. Host applications — orchestrators, eval harnesses, adapters — stay thin.
 
-**Status:** OpenCode and **Claude Code** drivers are implemented (`openBay`, `doctor`, `env` isolation). See [docs/design.md](docs/design.md).
+**Status:** OpenCode, **Claude Code**, and **Cursor Agent** drivers are implemented (`openBay`, `doctor`, `env` isolation). See [docs/design.md](docs/design.md).
 
 ## Why
 
-Each coding CLI stores config, transcripts, and auth in a different place (`~/.claude`, `~/.config/opencode`, XDG, Keychain). Wrapping that knowledge inside every product duplicates the same bugs: polluted `~/.config`, leaked host `GH_TOKEN`, missing login after `HOME` remap, ad-hoc stdout parsers.
+Each coding CLI stores config, transcripts, and auth in a different place (`~/.claude`, `~/.config/opencode`, `~/.cursor`, XDG, Keychain). Wrapping that knowledge inside every product duplicates the same bugs: polluted `~/.config`, leaked host `GH_TOKEN`, missing login after `HOME` remap, ad-hoc stdout parsers.
 
 enginebay owns that knowledge. A consumer owns *when* to run, *which* prompt, *which* tools, and *what* to do with events.
 
@@ -20,7 +20,7 @@ enginebay owns that knowledge. A consumer owns *when* to run, *which* prompt, *w
 | --- | --- | --- |
 | Spawn the CLI headless | yes | — |
 | Isolate config / session DB | yes | — |
-| Inherit provider auth from the host | yes | host login (`opencode auth`, `claude login`) |
+| Inherit provider auth from the host | yes | host login (`opencode auth`, `claude login`, `agent login`) |
 | Inject session-scoped MCP | yes | provide the stdio command |
 | Canonical events (text, thinking, tools) | yes | map to product traces |
 | Workspace directory | ephemeral temp, named XDG, or a path you pass | choose id vs path; clone / destroy policy |
@@ -74,20 +74,20 @@ Do not pass both. IDs are a single path segment, NFC, lowercased; unicode is all
 
 ## Engines
 
-v1 implements OpenCode and Claude Code. Later engines wait until a consumer needs them.
+v1 implements OpenCode, Claude Code, and Cursor Agent. Later engines wait until a consumer needs them.
 
 | ID | CLI | Notes |
 | --- | --- | --- |
 | `opencode` | `opencode` | MCP via `OPENCODE_CONFIG_CONTENT`. Auth under `~/.local/share/opencode`. |
 | `claude-code` | `claude` | MCP via `--mcp-config --strict-mcp-config`. Auth via host `claude login` / Keychain. |
-| `cursor-agent` | later | |
+| `cursor-agent` | `cursor-agent` (`agent`) | MCP via isolated `CURSOR_CONFIG_DIR/mcp.json` + `--approve-mcps`. Auth via `CURSOR_API_KEY` or host `agent login`. |
 | `gemini` | later | |
 
 The CLI must already be on `PATH`. enginebay does not vendor engine binaries.
 
 ## Isolation (v1: `env`)
 
-Default backend remaps XDG (and engine-specific flags such as `OPENCODE_DISABLE_GLOBAL_CONFIG`) to a disposable directory, so host `~/.config/opencode` and `~/AGENTS.md` are neither read nor written. Provider auth is reattached from the host by a **narrow, engine-specific path** (symlink or kept `HOME` for Keychain) — not by exposing the whole home directory.
+Default backend remaps XDG / `CURSOR_CONFIG_DIR` (and engine-specific flags such as `OPENCODE_DISABLE_GLOBAL_CONFIG`) to a disposable directory, so host `~/.config/opencode`, `~/.cursor/mcp.json`, and `~/AGENTS.md` are neither read nor written. Provider auth is reattached from the host by a **narrow, engine-specific path** (symlink or kept `HOME` for Keychain) — not by exposing the whole home directory.
 
 Host `GH_TOKEN` / `GITHUB_TOKEN` are removed from the child environment unless the consumer puts them in `extraEnv`.
 

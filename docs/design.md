@@ -2,7 +2,7 @@
 
 Isolated bays for coding-agent CLIs. This document is the design of record for the package.
 
-Status: **OpenCode and Claude Code implemented.**
+Status: **OpenCode, Claude Code, and Cursor Agent implemented.**
 
 ## 1. Problem
 
@@ -40,7 +40,7 @@ Prior art in other repositories inlined the same logic for Claude Code and OpenC
 | Minting GitHub App installation tokens | Consumer; pass the token in |
 | Vendoring `opencode` / `claude` binaries | CLI on `PATH` |
 | Being a general OS sandbox | `srt`, `jai`, Docker `sbx` already exist; they may become *backends* |
-| Implementing Cursor Agent / Antigravity / Gemini in the first slice | Catalog entries wait until a consumer needs them |
+| Implementing Gemini / Antigravity in this slice | Catalog entries wait until a consumer needs them |
 | `opencode serve` / long-lived attach | Each `run()` is a new process |
 
 ## 4. Concepts
@@ -71,7 +71,7 @@ canonical BayEvent stream
 Names may move slightly in implementation; the shapes should not.
 
 ```ts
-export type EngineId = "opencode" | "claude-code"; // v1: opencode first
+export type EngineId = "opencode" | "claude-code" | "cursor-agent";
 
 export type IsolationKind = "env"; // later: "jai" | "srt"
 
@@ -196,6 +196,17 @@ Shared rules:
 - Git isolation via `GIT_CONFIG_GLOBAL`, not a fake `HOME`.
 - Do not pass `CLAUDE_CONFIG_DIR` (macOS Keychain namespaces on that path).
 
+**Cursor Agent**
+
+- Keep real `HOME` so Keychain / `agent login` still work.
+- `CURSOR_CONFIG_DIR` → a disposable runtime dir (host `~/.cursor/mcp.json` and `cli-config.json` are neither read nor written).
+- Write session-scoped `mcp.json` and an unrestricted `cli-config.json` into that dir.
+- Auth: symlink host `~/.cursor/auth.json` into the isolated config dir when present. `CURSOR_API_KEY` in the host env (or `extraEnv`) passes through.
+- argv: `cursor-agent -p --force --trust --approve-mcps --sandbox disabled --output-format stream-json --workspace <workDir> [--model <id>] <prompt>`
+- Prefer the unambiguous `cursor-agent` binary; fall back to `agent` when that is what is on `PATH`.
+- The CLI has no `--append-system-prompt`. enginebay prepends `instructions` to the prompt. Do not write `AGENTS.md` into `workDir`.
+- Do not pass `--continue` / `--resume`. Each `run()` is a new process.
+
 ### 6.2 Later backends (not v1)
 
 `jai` (copy-on-write / empty home) and Anthropic `srt` (Seatbelt / bubblewrap) can wrap the same argv. They are isolation *backends*, selected by `isolation.kind`. enginebay still owns auth-attach allowlists; the backend must be configured to grant those paths and deny the rest of `$HOME`.
@@ -228,6 +239,7 @@ Consumers typically derive `workspaceId` from their own config key (for example 
 | --- | --- | --- |
 | OpenCode | `~/.local/share/opencode/auth.json` (and `auth-v2.json`) | symlink or bind into the isolated data dir |
 | Claude Code | Keychain and/or `~/.claude` credentials | keep host `HOME`; narrow credential attach only |
+| Cursor Agent | `CURSOR_API_KEY` and/or `~/.cursor/auth.json` (Keychain on macOS) | keep host `HOME`; symlink `auth.json` into isolated `CURSOR_CONFIG_DIR` |
 
 If attach fails, `openBay` still succeeds (the CLI may error on first `run()`). `doctor()` reports the miss in English so UIs can tell the human to log in.
 
@@ -253,12 +265,13 @@ The consumer supplies stdio `{ command, args, env }`. enginebay never puts servi
 | --- | --- |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → `mcp.<name> = { type: "local", command: [command, ...args], enabled: true, environment }` |
 | Claude Code | temp `mcp-config.json` + `--mcp-config` + `--strict-mcp-config` |
+| Cursor Agent | isolated `CURSOR_CONFIG_DIR/mcp.json` + `--approve-mcps` (no `--mcp-config` flag) |
 
 Default server name is `enginebay` so products are not hardcoded. Consumers may pass a custom `name` (for example `board-mcp`) to control tool-name prefixes. Parsers strip known MCP prefixes (`mcp__[^_]+__`) when emitting `tool`.
 
 ## 9. Instructions
 
-Some engines take a CLI flag (`claude --append-system-prompt`). OpenCode `instructions` is a **list of file paths**. enginebay always accepts an inline string, writes `instructions.md` under the runtime dir, and points the engine at it. The file is deleted on `close()`.
+Some engines take a CLI flag (`claude --append-system-prompt`). OpenCode `instructions` is a **list of file paths**. Cursor Agent has no instruction flag; enginebay prepends the inline string to the prompt. The public option is always an inline string. enginebay writes `instructions.md` under the runtime dir when the engine only accepts paths. The file is deleted on `close()`.
 
 Do not write `AGENTS.md` into `workDir`.
 
@@ -282,6 +295,8 @@ OpenCode v1 parser reads `opencode run --format json` NDJSON (`text`, `reasoning
 
 Claude parser reads `claude --output-format stream-json` (`assistant` thinking/text/`tool_use`, `user` `tool_result`). Remaining-budget and other product-specific fields stay on the consumer side.
 
+Cursor parser reads `cursor-agent -p --output-format stream-json` (`assistant` text, `tool_call` started/completed, error `result`). Thinking is usually suppressed in print mode. The concatenated terminal `result` is skipped so assistant text is not doubled.
+
 ## 11. Engine catalog
 
 Implemented drivers:
@@ -289,8 +304,9 @@ Implemented drivers:
 1. **Types + `env` isolation helpers + `doctor`**
 2. **OpenCode driver** — argv, config JSON, auth attach, JSON parser, fixture tests
 3. **Claude Code driver** — argv, MCP config, stream-json parser, fixture tests
+4. **Cursor Agent driver** — argv, isolated `CURSOR_CONFIG_DIR` MCP, auth attach, stream-json parser, fixture tests
 
-Future: **Cursor / Gemini** when a consumer needs them.
+Future: **Gemini** when a consumer needs it.
 
 ## 12. Testing
 
