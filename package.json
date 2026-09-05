@@ -2,7 +2,7 @@
   "name": "enginebay",
   "version": "1.0.1",
   "license": "UNLICENSED",
-  "description": "Isolated bays for coding-agent CLIs (OpenCode, Claude Code, and later engines).",
+  "description": "Isolated bays for coding-agent CLIs (OpenCode, Claude Code, Cursor Agent, and later engines).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 import type { PreparedWorkspace } from "./workspace.js";
 
-export const ENGINE_IDS = ["opencode", "claude-code"] as const;
+export const ENGINE_IDS = ["opencode", "claude-code", "cursor-agent"] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
 export const ISOLATION_KINDS = ["env"] as const;

@@ -307,6 +307,117 @@ describe("openBay Claude Code isolation", () => {
   });
 });
 
+describe("openBay Cursor Agent isolation", () => {
+  it("keeps host HOME, isolates CURSOR_CONFIG_DIR, and attaches auth.json", async () => {
+    const hostHome = await tempDir("enginebay-cursor-host-");
+    const workDir = await tempDir("enginebay-cursor-work-");
+    const binDir = await tempDir("enginebay-cursor-bin-");
+    const dumpDir = await tempDir("enginebay-cursor-dump-");
+    await installFakeCommand(binDir, "cursor-agent");
+    await mkdir(join(hostHome, ".cursor"), { recursive: true });
+    await writeFile(
+      join(hostHome, ".cursor", "auth.json"),
+      '{"accessToken":"host"}\n',
+      "utf8",
+    );
+    await writeFile(
+      join(hostHome, ".cursor", "mcp.json"),
+      '{"mcpServers":{"host-mcp":{"command":"true"}}}\n',
+      "utf8",
+    );
+    await writeFile(join(workDir, "keep.txt"), "workspace\n", "utf8");
+
+    const bay = await openBay({
+      engine: "cursor-agent",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+        GH_TOKEN: "github_pat_host",
+      }),
+      instructions: "You are in a bay.",
+      mcp: {
+        command: process.execPath,
+        args: ["/tmp/mcp.js"],
+        env: { BOARD_URL: "http://127.0.0.1:9" },
+        name: "board-mcp",
+      },
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "ok" }],
+          },
+        }),
+        GH_TOKEN: "ghs_mintedtokenvalue",
+      },
+      git: { committerName: "bay-bot" },
+      model: "composer-2",
+    });
+
+    const events = await collectEvents(bay, "read the briefing");
+    expect(events.map((event) => event.kind)).toEqual(["text", "exit"]);
+    expect(events[0]).toEqual({ kind: "text", text: "ok" });
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+
+    const argv = JSON.parse(
+      await readFile(join(dumpDir, "argv.json"), "utf8"),
+    ) as string[];
+    expect(argv).not.toContain("--continue");
+    expect(argv[argv.indexOf("--model") + 1]).toBe("composer-2");
+    expect(argv[argv.indexOf("--workspace") + 1]).toBe(workDir);
+    expect(argv.at(-1)).toBe("You are in a bay.\n\nread the briefing");
+    expect(argv).toContain("--approve-mcps");
+    expect(argv).toContain("--force");
+    expect(argv[argv.indexOf("--output-format") + 1]).toBe("stream-json");
+
+    const dumped = JSON.parse(
+      await readFile(join(dumpDir, "env.json"), "utf8"),
+    ) as {
+      HOME: string;
+      GH_TOKEN: string;
+      GITHUB_TOKEN?: string;
+      GIT_CONFIG_GLOBAL: string;
+      CURSOR_CONFIG_DIR?: string;
+      isolatedCursorFiles: string[];
+    };
+    expect(dumped.HOME).toBe(hostHome);
+    expect(dumped.GH_TOKEN).toBe("ghs_mintedtokenvalue");
+    expect(dumped.GITHUB_TOKEN).toBeUndefined();
+    expect(dumped.CURSOR_CONFIG_DIR).toBeDefined();
+    expect(dumped.CURSOR_CONFIG_DIR).not.toBe(join(hostHome, ".cursor"));
+    expect(dumped.isolatedCursorFiles).toContain("auth.json");
+    expect(dumped.isolatedCursorFiles).toContain("mcp.json");
+    expect(dumped.isolatedCursorFiles).toContain("cli-config.json");
+    expect(dumped.GIT_CONFIG_GLOBAL).not.toBe("/dev/null");
+    expect(dumped.GIT_CONFIG_GLOBAL).not.toContain(hostHome);
+    const gitconfig = await readFile(dumped.GIT_CONFIG_GLOBAL, "utf8");
+    expect(gitconfig).toContain("name = bay-bot");
+
+    const mcp = JSON.parse(
+      await readFile(join(dumped.CURSOR_CONFIG_DIR!, "mcp.json"), "utf8"),
+    ) as {
+      mcpServers: Record<string, { command?: string }>;
+    };
+    expect(mcp.mcpServers["board-mcp"]?.command).toBe(process.execPath);
+    expect(mcp.mcpServers["host-mcp"]).toBeUndefined();
+
+    expect(await readFile(join(hostHome, ".cursor", "mcp.json"), "utf8")).toBe(
+      '{"mcpServers":{"host-mcp":{"command":"true"}}}\n',
+    );
+    expect(await readFile(join(hostHome, ".cursor", "auth.json"), "utf8")).toBe(
+      '{"accessToken":"host"}\n',
+    );
+    expect(existsSync(join(workDir, "AGENTS.md"))).toBe(false);
+
+    await bay.close();
+    expect(existsSync(join(workDir, "keep.txt"))).toBe(true);
+    expect(existsSync(dumped.CURSOR_CONFIG_DIR!)).toBe(false);
+  });
+});
+
 describe("openBay workspaces", () => {
   it("creates an ephemeral work dir and deletes it on close", async () => {
     const hostHome = await tempDir("enginebay-ws-eph-home-");
@@ -396,6 +507,13 @@ describe("doctor", () => {
     });
     expect(claudeMissing.ok).toBe(false);
     expect(claudeMissing.message).toMatch(/claude CLI is not on PATH/);
+
+    const cursorMissing = await doctor("cursor-agent", {
+      env: { PATH: emptyPath, HOME: emptyPath },
+      home: emptyPath,
+    });
+    expect(cursorMissing.ok).toBe(false);
+    expect(cursorMissing.message).toMatch(/cursor-agent CLI is not on PATH/);
   });
 
   it("finds a fake CLI and host auth files", async () => {
@@ -434,5 +552,27 @@ describe("doctor", () => {
     expect(report.cli.version).toBe("1.0.0-fake");
     expect(report.auth.found).toBe(true);
     expect(report.message).toMatch(/credentials file/);
+  });
+
+  it("finds a fake cursor-agent CLI and host auth file", async () => {
+    const hostHome = await tempDir("enginebay-cursor-doc-");
+    const binDir = await tempDir("enginebay-cursor-doc-bin-");
+    await installFakeCommand(binDir, "cursor-agent");
+    await mkdir(join(hostHome, ".cursor"), { recursive: true });
+    await writeFile(
+      join(hostHome, ".cursor", "auth.json"),
+      '{"accessToken":"x"}\n',
+      "utf8",
+    );
+    const report = await doctor("cursor-agent", {
+      env: withFakePath(binDir, { HOME: hostHome, PATH: process.env.PATH }),
+      home: hostHome,
+    });
+    expect(report.ok).toBe(true);
+    expect(report.cli.found).toBe(true);
+    expect(report.cli.command).toBe("cursor-agent");
+    expect(report.cli.version).toBe("1.0.0-fake");
+    expect(report.auth.found).toBe(true);
+    expect(report.message).toMatch(/auth file/);
   });
 });
