@@ -33,6 +33,15 @@ async function dumpedEnv(dumpDir: string): Promise<Record<string, unknown>> {
 }
 
 describe("launchEngine", () => {
+  it("rejects unknown engines at runtime", async () => {
+    await expect(
+      launchEngine({
+        engine: "gemini" as never,
+        hostEnv: {},
+      }),
+    ).rejects.toThrow('unknown launch engine "gemini"');
+  });
+
   it("launches Codex interactively with isolated config and attached auth", async () => {
     const hostHome = await tempDir("enginebay-launch-codex-host-");
     const workDir = await tempDir("enginebay-launch-codex-work-");

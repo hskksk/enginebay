@@ -104,11 +104,15 @@ export async function launchEngine(
 async function prepareLaunch(
   options: LaunchEngineOptions,
 ): Promise<PreparedLaunch> {
+  if (!isLaunchEngineId(options.engine)) {
+    throw new Error(`enginebay: unknown launch engine "${options.engine}"`);
+  }
   const hostEnv = options.hostEnv ?? process.env;
   const hostHome = resolveHostHome(hostEnv, options.hostHome);
   const cwd = resolve(options.workDir ?? process.cwd());
   await mkdir(cwd, { recursive: true });
   const runtimeDir = await mkdtemp(join(tmpdir(), "enginebay-launch-"));
+  try {
   const extraEnv = options.extraEnv ?? {};
   const gitconfigPath = join(runtimeDir, "gitconfig");
   const hasGitToken = extraEnvHasGitToken(extraEnv);
@@ -253,6 +257,10 @@ async function prepareLaunch(
       },
     }),
   };
+  } catch (error) {
+    await rm(runtimeDir, RM_OPTS);
+    throw error;
+  }
 }
 
 async function runInteractive(prepared: PreparedLaunch): Promise<number> {
