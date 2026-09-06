@@ -4,6 +4,23 @@ enginebay runs a host-installed coding agent (OpenCode, Claude Code, later Curso
 
 Design of record: [docs/design.md](docs/design.md). Do not add product-specific imports or types to the public API.
 
+## Language
+
+**English only** for everything that lands in this repository, even when the user writes in Japanese or another language.
+
+Write English in source, comments, docs, tests, commit messages, PR titles and bodies, CI workflow text, error messages, and any other artifact you create or edit.
+
+Do not mix Japanese (or other non-English prose) into files. Translate existing non-English prose to English instead of leaving it.
+
+The user may prompt in Japanese. Still produce English artifacts. Do not mirror the prompt language in code or documentation.
+
+Exceptions:
+
+- Unicode in identifiers, fixtures, or examples that demonstrate encoding support (for example `my-app-ミカ`).
+- Third-party names, URLs, and quoted CLI output.
+
+## Development
+
 ```bash
 pnpm install
 pnpm test
