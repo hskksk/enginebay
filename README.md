@@ -116,52 +116,27 @@ Live coding CLIs are not required for unit tests.
 
 ## Publish
 
-`main` へのマージごとに [semantic-release](https://semantic-release.gitbook.io/) が Conventional Commits に従ってバージョンを上げ、GitHub Release を作成し、**npm に stage します**（[Release workflow](.github/workflows/publish.yml)）。registry への反映は maintainer が 2FA で approve するまで待ちます。
+Every merge to `main` runs [semantic-release](https://semantic-release.gitbook.io/), which bumps the version from Conventional Commits, creates a GitHub Release, and **stages the package on npm** ([Release workflow](.github/workflows/publish.yml)). The version stays staged until a maintainer approves it with 2FA.
 
-| PR / コミット prefix | バージョン |
+| PR / commit prefix | Release |
 | --- | --- |
-| `fix:` | patch（例 `0.1.0` → `0.1.1`） |
-| `feat:` | minor（例 `0.1.0` → `0.2.0`） |
-| `BREAKING CHANGE:` または `feat!:` | major |
-| その他（`chore:` `docs:` `ci:` など） | patch |
+| `fix:` | patch (e.g. `0.1.0` → `0.1.1`) |
+| `feat:` | minor (e.g. `0.1.0` → `0.2.0`) |
+| `BREAKING CHANGE:` or `feat!:` | major |
+| Other (`chore:`, `docs:`, `ci:`, …) | patch |
 
-**Squash merge 推奨** — マージ後のコミットメッセージが PR タイトルになるため、PR タイトルを `feat: …` / `fix: …` 形式にしてください。
+**Squash merge is the norm** — the merged commit message is usually the PR title, so set the PR title to `feat: …` / `fix: …` form.
 
-### CI（stage）→ maintainer（approve）
+### CI (stage) → maintainer (approve)
 
-1. Release workflow が `npm stage publish` を実行（OIDC / Trusted publishing）
-2. maintainer が npmjs.com または CLI で内容を確認して approve:
+1. The Release workflow runs `npm stage publish` (OIDC / trusted publishing).
+2. A maintainer reviews the staged package on npmjs.com or the CLI, then approves:
    - Web: npm → `enginebay` → **Staged packages**
-   - CLI: `npm stage list enginebay` → `npm stage approve <stage-id>`（2FA 必須）
+   - CLI: `npm stage list enginebay` → `npm stage approve <stage-id>` (2FA required)
 
-`npm stage approve` / `reject` は OIDC 不可。ローカル CLI か npmjs.com から 2FA 付きで実行してください。
+`npm stage approve` / `reject` cannot use OIDC. Run them from a local CLI or npmjs.com with 2FA.
 
-### Trusted publishing セットアップ（初回のみ）
-
-1. npm で `enginebay` パッケージを作成（初回 publish 前）
-2. パッケージ Settings → **Trusted publishing** で GitHub Actions を追加:
-   - Organization or user: `hskksk`
-   - Repository: `enginebay`
-   - Workflow filename: `publish.yml`（ファイル名のみ。パスは含めない）
-   - Environment name: **空のまま**（GitHub Environment を使わない限り）
-   - Allowed actions: **`npm stage publish` のみ**（`npm publish` はオフ推奨）
-3. （推奨）Settings → Publishing access → **Require two-factor authentication and disallow tokens**
-4. PR を `main` にマージ → Release workflow が stage まで実行
-
-認証は [npm trusted publishers](https://docs.npmjs.com/trusted-publishers)（GitHub Actions OIDC）を使用します。stage 時にも provenance が付与されます（public repo / public package の場合）。
-
-### Troubleshooting: `E403 OIDC permission denied for this action`
-
-CI が `npm publish` を呼んでいるのに Trusted publishing で **`npm stage publish` だけ**許可していると、この 403 になります。本 repo は `@semantic-release/exec` 経由で `npm stage publish` を使います。
-
-それでも 403 の場合:
-
-1. npm → Trusted publishing の org/repo/workflow filename が完全一致しているか確認
-2. **Allowed actions** で `npm stage publish` がオンで **Save changes** 済みか確認
-3. Environment name を npm に入れているなら workflow に `environment:` を追加するか、npm 側を空に戻す
-4. `publish.yml` では semantic-release 利用時 **`actions/setup-node` に `registry-url` を付けない**
-
-リリース対象のコミットがない場合（例: 直前の `[skip ci]` リリースコミットのみ）はスキップされます。手動実行は Actions → Release → Run workflow から可能です。
+Auth uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (GitHub Actions OIDC). Provenance is attached at stage time as well (public repo / public package).
 
 ## Repository
 
