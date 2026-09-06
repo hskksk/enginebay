@@ -136,18 +136,6 @@ Every merge to `main` runs [semantic-release](https://semantic-release.gitbook.i
 
 `npm stage approve` / `reject` cannot use OIDC. Run them from a local CLI or npmjs.com with 2FA.
 
-### Trusted publishing setup (first time only)
-
-1. Create the `enginebay` package on npm (before the first publish).
-2. In the package Settings → **Trusted publishing**, add GitHub Actions:
-   - Organization or user: `hskksk`
-   - Repository: `enginebay`
-   - Workflow filename: `publish.yml` (filename only; do not include a path)
-   - Environment name: **leave empty** (unless the workflow uses a GitHub Environment)
-   - Allowed actions: **`npm stage publish` only** (leave `npm publish` off)
-3. (Recommended) Settings → Publishing access → **Require two-factor authentication and disallow tokens**
-4. Merge a PR to `main` → the Release workflow runs through stage
-
 Auth uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (GitHub Actions OIDC). Provenance is attached at stage time as well (public repo / public package).
 
 ### Troubleshooting: `E403 OIDC permission denied for this action`
