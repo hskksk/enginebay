@@ -138,19 +138,6 @@ Every merge to `main` runs [semantic-release](https://semantic-release.gitbook.i
 
 Auth uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (GitHub Actions OIDC). Provenance is attached at stage time as well (public repo / public package).
 
-### Troubleshooting: `E403 OIDC permission denied for this action`
-
-This 403 happens when CI calls `npm publish` but Trusted publishing only allows **`npm stage publish`**. This repo uses `npm stage publish` via `@semantic-release/exec`.
-
-If it is still 403:
-
-1. Confirm the npm Trusted publishing org/repo/workflow filename match exactly
-2. Confirm **Allowed actions** has `npm stage publish` on and **Save changes** was clicked
-3. If you set an Environment name on npm, add `environment:` to the workflow or clear it on npm
-4. In `publish.yml`, **do not set `registry-url` on `actions/setup-node`** when using semantic-release
-
-If there is no releasable commit (for example only the previous `[skip ci]` release commit), the workflow skips. You can run it manually from Actions → Release → Run workflow.
-
 ## Repository
 
 Standalone npm package: unscoped name **`enginebay`**, repository [hskksk/enginebay](https://github.com/hskksk/enginebay).
