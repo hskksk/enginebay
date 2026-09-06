@@ -13,13 +13,17 @@ describe("buildCodexConfig", () => {
   it("writes a session-scoped stdio MCP server as TOML", () => {
     expect(
       buildCodexConfig({
-        command: "/usr/bin/node",
-        args: ["/tmp/mcp.js", "argument with spaces"],
-        env: { BOARD_TOKEN: 'a"b' },
-        name: "board-mcp",
+        mcp: {
+          command: "/usr/bin/node",
+          args: ["/tmp/mcp.js", "argument with spaces"],
+          env: { BOARD_TOKEN: 'a"b' },
+          name: "board-mcp",
+        },
+        instructions: "Use the board.",
       }),
     ).toBe(
-      `[mcp_servers."board-mcp"]\n` +
+      `developer_instructions = "Use the board."\n\n` +
+        `[mcp_servers."board-mcp"]\n` +
         `command = "/usr/bin/node"\n` +
         `args = ["/tmp/mcp.js", "argument with spaces"]\n` +
         `env = { "BOARD_TOKEN" = "a\\"b" }\n`,

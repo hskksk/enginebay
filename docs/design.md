@@ -2,8 +2,9 @@
 
 Isolated bays for coding-agent CLIs. This document is the design of record for the package.
 
-Status: **OpenCode, Claude Code, and Cursor Agent headless bays implemented.
-Codex, OpenCode, Claude Code, and Cursor Agent interactive launch implemented.**
+Status: **OpenCode, Claude Code, Cursor Agent, and Codex interactive launch
+implemented. OpenCode, Claude Code, and Cursor Agent also implement canonical
+headless bays.**
 
 ## 1. Problem
 
@@ -29,9 +30,10 @@ Prior art in other repositories inlined the same logic for Claude Code and OpenC
 5. **Events are canonical.** Consumers do not parse `stream-json` or `opencode run --format json` themselves.
 6. **The library is a standalone primitive.** Unscoped package name `enginebay`, no product-specific imports or types in the public API.
 7. **Live engines are not required for unit tests.** Argv, env, and parsers are tested with fixtures. Spawning a real CLI is optional / manual.
-8. **Interactive use is a first-class entry point.** `enginebay codex
-   <options>` (and the other implemented engines) preserves the native terminal
-   while applying enginebay's config, auth, and environment isolation.
+8. **Interactive use is a first-class entry point.** `enginebay <engine>
+   [enginebay options] -- [native options]` exposes the common workspace, model,
+   instructions, MCP, environment, git, auth, and isolation layer while
+   preserving the native terminal.
 
 ## 3. Non-goals
 
@@ -156,7 +158,11 @@ export function launchEngine(options: {
   engine: LaunchEngineId;
   args?: string[];        // forwarded to the native CLI
   workDir?: string;       // defaults to process.cwd()
+  workspaceId?: string;
+  isolation?: { kind: IsolationKind };
   mcp?: McpStdio;
+  instructions?: string;
+  model?: string;
   extraEnv?: Record<string, string>;
   git?: { committerName?: string };
 }): Promise<number>;      // native exit status
@@ -165,15 +171,27 @@ export function launchEngine(options: {
 ### 5.1 Interactive launcher
 
 The package exposes a `bin` named `enginebay`. Its first positional argument
-selects the engine; all remaining arguments belong to that engine. Wrapper
-options are intentionally limited to top-level help/version so vendor flags do
-not need to be duplicated or kept in sync.
+selects the engine. Arguments before `--` configure enginebay using the same
+concepts as `OpenBayOptions`; arguments after `--` belong to the native CLI.
+The mandatory boundary avoids collisions as vendor CLIs add flags.
 
 `launchEngine()` uses inherited stdio rather than parsing output. It installs
 temporary engine config, forwards termination signals, returns the child exit
 status, and removes temporary state after the child exits. The current
 headless-only event contract remains unchanged; Codex does not become an
 `openBay()` engine until a canonical Codex event parser is implemented.
+
+CLI mappings:
+
+| enginebay option | `launchEngine()` |
+| --- | --- |
+| `--work-dir`, `--workspace-id` | `workDir`, `workspaceId` |
+| `--model` | `model` |
+| `--instructions`, `--instructions-file` | inline `instructions` |
+| `--mcp-command`, repeatable `--mcp-arg` / `--mcp-env`, `--mcp-name` | `mcp` |
+| repeatable `--env` | `extraEnv` |
+| `--git-committer-name` | `git.committerName` |
+| `--isolation env` | `isolation.kind` |
 
 ### 5.2 Consumer adapter pattern
 
@@ -239,6 +257,12 @@ Shared rules:
 - The CLI has no `--append-system-prompt`. enginebay prepends `instructions` to the prompt. Do not write `AGENTS.md` into `workDir`.
 - Do not pass `--continue` / `--resume`. Each `run()` is a new process.
 
+For interactive launch, OpenCode, Claude Code, and Cursor Agent reuse these
+same config, auth, MCP, environment, and git-isolation mechanisms. Native argv
+is inherited after `--`; enginebay adds model and engine-specific MCP /
+instruction settings. Cursor has no system-prompt flag, so its interactive
+instructions become the initial prompt.
+
 **Codex (interactive launcher)**
 
 - Set `CODEX_HOME` to a disposable directory containing an enginebay-owned
@@ -246,10 +270,12 @@ Shared rules:
 - Attach only host `~/.codex/auth.json`; do not copy host config, sessions,
   history, or rollout logs.
 - Write an optional stdio server under `[mcp_servers.<name>]`.
+- Write inline instructions as `developer_instructions`.
 - Keep the real `HOME` for platform credential stores while isolating Codex's
   own state through `CODEX_HOME`.
-- Forward native argv unchanged. The interactive launcher does not force an
-  approval or sandbox policy; callers may select those through Codex flags.
+- Preserve native argv after enginebay's model override. The interactive
+  launcher does not force an approval or sandbox policy; callers may select
+  those through Codex flags after `--`.
 
 ### 6.2 Later backends (not v1)
 

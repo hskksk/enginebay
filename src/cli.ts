@@ -1,3 +1,4 @@
+import { parseCliOptions } from "./cli-options.js";
 import type { LaunchEngineId, LaunchEngineOptions } from "./launch.js";
 import { launchEngine } from "./launch.js";
 
@@ -17,10 +18,10 @@ const COMMANDS: Readonly<Record<string, LaunchEngineId>> = {
   "cursor-agent": "cursor-agent",
 };
 
-const HELP = `Usage: enginebay <engine> [engine options...]
+const HELP = `Usage: enginebay <engine> [enginebay options] [-- native options...]
 
-Launch a coding-agent CLI in an isolated, disposable bay while keeping the
-terminal interactive. Engine options are forwarded to the underlying CLI.
+Launch a coding-agent CLI with enginebay isolation, workspace, instructions,
+environment, git, and session-scoped MCP configuration.
 
 Engines:
   codex
@@ -30,11 +31,31 @@ Engines:
 
 Examples:
   enginebay codex
-  enginebay codex --model gpt-5
-  enginebay claude --model sonnet
-  enginebay opencode .
+  enginebay opencode --workspace-id my-project --model provider/model
+  enginebay claude --instructions-file ./agent.md -- --verbose
+  enginebay cursor --mcp-command node --mcp-arg ./server.mjs
+  enginebay codex -- --search
 
-Run "enginebay <engine> --help" for the engine's own help.
+Run "enginebay <engine> --help" for enginebay options.
+Run "enginebay <engine> -- --help" for the native CLI's help.
+`;
+
+const ENGINE_HELP = `Enginebay options:
+  --work-dir <path>             Use an explicit workspace directory
+  --workspace-id <id>           Use a named persistent workspace
+  --isolation <env>             Select isolation backend (currently env)
+  --model <model>               Select the engine model
+  --instructions <text>         Add engine-level instructions
+  --instructions-file <path>    Read engine-level instructions from a file
+  --mcp-command <command>       Inject a session-scoped stdio MCP server
+  --mcp-arg <arg>               Add an MCP argument (repeatable)
+  --mcp-env <KEY[=VALUE]>       Add/copy MCP environment (repeatable)
+  --mcp-name <name>             Set MCP server name (default: enginebay)
+  --env <KEY[=VALUE]>           Add/copy child environment (repeatable)
+  --git-committer-name <name>   Set isolated git committer name
+  -h, --help                    Show these options
+
+Use -- before every native CLI argument.
 `;
 
 export async function runCli(
@@ -67,7 +88,19 @@ export async function runCli(
   if (!engine) {
     return unknownCommand(command, io);
   }
-  return launch({ engine, args: engineArgs, workDir: process.cwd() });
+  try {
+    const parsed = await parseCliOptions(engineArgs);
+    if (parsed.help) {
+      io.stdout.write(`${HELP}\n${ENGINE_HELP}`);
+      return 0;
+    }
+    const { help: _help, ...options } = parsed;
+    return launch({ engine, ...options });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    io.stderr.write(`${message}\n\n${ENGINE_HELP}`);
+    return 2;
+  }
 }
 
 function unknownCommand(command: string, io: CliIo): number {

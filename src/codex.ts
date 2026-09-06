@@ -32,23 +32,32 @@ export async function attachCodexAuth(options: {
   return { attached };
 }
 
-export function buildCodexConfig(mcp?: McpStdio): string {
-  if (!mcp) {
-    return "";
+export function buildCodexConfig(options: {
+  mcp?: McpStdio;
+  instructions?: string;
+} = {}): string {
+  const lines: string[] = [];
+  if (options.instructions && options.instructions.length > 0) {
+    lines.push(`developer_instructions = ${tomlString(options.instructions)}`);
   }
-  const name = mcp.name ?? "enginebay";
-  const lines = [
-    `[mcp_servers.${tomlString(name)}]`,
-    `command = ${tomlString(mcp.command)}`,
-    `args = [${mcp.args.map(tomlString).join(", ")}]`,
-  ];
-  const envEntries = Object.entries(mcp.env).map(
-    ([key, value]) => `${tomlString(key)} = ${tomlString(value)}`,
-  );
-  if (envEntries.length > 0) {
-    lines.push(`env = { ${envEntries.join(", ")} }`);
+  if (options.mcp) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    const name = options.mcp.name ?? "enginebay";
+    lines.push(
+      `[mcp_servers.${tomlString(name)}]`,
+      `command = ${tomlString(options.mcp.command)}`,
+      `args = [${options.mcp.args.map(tomlString).join(", ")}]`,
+    );
+    const envEntries = Object.entries(options.mcp.env).map(
+      ([key, value]) => `${tomlString(key)} = ${tomlString(value)}`,
+    );
+    if (envEntries.length > 0) {
+      lines.push(`env = { ${envEntries.join(", ")} }`);
+    }
   }
-  return `${lines.join("\n")}\n`;
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
 function tomlString(value: string): string {

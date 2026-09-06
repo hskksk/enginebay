@@ -41,6 +41,7 @@ if (dumpDir) {
   const mcpConfigIndex = process.argv.indexOf("--mcp-config");
   const mcpConfigPath =
     mcpConfigIndex >= 0 ? process.argv[mcpConfigIndex + 1] : undefined;
+  const gitConfigPath = process.env.GIT_CONFIG_GLOBAL;
   writeFileSync(
     join(dumpDir, "argv.json"),
     `${JSON.stringify(process.argv.slice(2), null, 2)}\n`,
@@ -49,6 +50,7 @@ if (dumpDir) {
     join(dumpDir, "env.json"),
     `${JSON.stringify(
       {
+        cwd: process.cwd(),
         HOME: process.env.HOME,
         XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
         XDG_STATE_HOME: process.env.XDG_STATE_HOME,
@@ -61,6 +63,12 @@ if (dumpDir) {
         GH_TOKEN: process.env.GH_TOKEN,
         GITHUB_TOKEN: process.env.GITHUB_TOKEN,
         GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+        gitConfig:
+          gitConfigPath &&
+          gitConfigPath !== "/dev/null" &&
+          existsSync(gitConfigPath)
+            ? readFileSync(gitConfigPath, "utf8")
+            : undefined,
         GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
         CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,

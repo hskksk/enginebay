@@ -6,7 +6,10 @@ enginebay runs a host-installed coding agent (OpenCode, Claude Code, Cursor Agen
 
 It is not a product, a session loop, or a sandbox OS. Host applications — orchestrators, eval harnesses, adapters — stay thin.
 
-**Status:** OpenCode, **Claude Code**, and **Cursor Agent** headless drivers are implemented (`openBay`, `doctor`, `env` isolation). The interactive launcher additionally supports **Codex**. See [docs/design.md](docs/design.md).
+**Status:** Interactive launch supports **OpenCode, Claude Code, Cursor Agent,
+and Codex**. The canonical headless API (`openBay`, `doctor`, `BayEvent`)
+supports OpenCode, Claude Code, and Cursor Agent. See
+[docs/design.md](docs/design.md).
 
 ## Why
 
@@ -19,6 +22,7 @@ enginebay owns that knowledge. A consumer owns *when* to run, *which* prompt, *w
 | Concern | enginebay | Consumer |
 | --- | --- | --- |
 | Spawn the CLI headless | yes | — |
+| Launch the native interactive CLI | yes | choose enginebay options and native argv |
 | Isolate config / session DB | yes | — |
 | Inherit provider auth from the host | yes | host login (`opencode auth`, `claude login`, `agent login`) |
 | Inject session-scoped MCP | yes | provide the stdio command |
@@ -62,22 +66,47 @@ Each `run()` is a **fresh CLI process**. Conversation continuity is the consumer
 
 ## Interactive CLI
 
-Use `enginebay` in place of the native command to get the same disposable
-configuration and narrowly attached host login while retaining the engine's
-interactive terminal:
+The CLI exposes enginebay's common features consistently across every
+interactive engine:
 
 ```bash
-enginebay codex
-enginebay codex --model gpt-5
-enginebay claude --model sonnet
-enginebay opencode .
-enginebay cursor-agent
+enginebay opencode \
+  --workspace-id my-project \
+  --model provider/model \
+  --instructions-file ./agent-instructions.md \
+  --mcp-command node \
+  --mcp-arg /path/to/mcp-proxy \
+  --mcp-env API_URL=http://127.0.0.1:8787
+
+enginebay claude --work-dir . --model sonnet -- --verbose
+enginebay cursor --workspace-id my-project
+enginebay codex --workspace-id my-project -- --search
 ```
 
-Everything after the engine name is forwarded to that engine. The child runs
-in the current directory, receives terminal input/output directly, and its exit
-status is returned by `enginebay`. `SIGHUP`, `SIGINT`, and `SIGTERM` are
-forwarded so interruption and terminal shutdown clean up the disposable bay.
+Arguments before `--` configure enginebay; arguments after `--` are forwarded
+unchanged to the native CLI. This explicit boundary prevents future vendor
+flags from colliding with enginebay options.
+
+Common options:
+
+| Option | Purpose |
+| --- | --- |
+| `--work-dir <path>` | explicit workspace |
+| `--workspace-id <id>` | named persistent workspace |
+| `--model <id>` | engine model |
+| `--instructions <text>` / `--instructions-file <path>` | session instructions |
+| `--mcp-command`, `--mcp-arg`, `--mcp-env`, `--mcp-name` | session-scoped stdio MCP |
+| `--env <KEY[=VALUE]>` | copy or set child environment |
+| `--git-committer-name <name>` | isolated git identity when a GitHub token is supplied |
+| `--isolation env` | isolation backend |
+
+`--env NAME` and `--mcp-env NAME` copy a value from the current environment,
+which avoids putting the secret itself in shell history. Host `GH_TOKEN` and
+`GITHUB_TOKEN` remain excluded unless explicitly supplied with `--env`.
+
+The child receives terminal input/output directly. Its exit status is returned,
+and termination signals are forwarded before disposable config is removed.
+Without `--work-dir` or `--workspace-id`, the child uses the current directory.
 
 The equivalent library primitive is:
 
@@ -85,9 +114,11 @@ The equivalent library primitive is:
 import { launchEngine } from "enginebay";
 
 const code = await launchEngine({
-  engine: "codex",
-  args: ["--model", "gpt-5"],
-  workDir: process.cwd(),
+  engine: "opencode",
+  workspaceId: "my-project",
+  model: "provider/model",
+  instructions: "Follow the tool protocol.",
+  args: ["--verbose"],
   mcp: {
     command: process.execPath,
     args: ["/path/to/mcp-proxy"],
@@ -96,10 +127,11 @@ const code = await launchEngine({
 });
 ```
 
-Codex uses a disposable `CODEX_HOME` with only the host
-`~/.codex/auth.json` attached. OpenCode, Claude Code, and Cursor use the same
-isolation rules as their headless bays. Host `GH_TOKEN` / `GITHUB_TOKEN` remain
-excluded unless `extraEnv` explicitly supplies one through the library API.
+The same `launchEngine()` options apply to OpenCode, Claude Code, Cursor Agent,
+and Codex. Each driver translates MCP and instructions to its native mechanism
+without writing instruction files into the workspace. Cursor Agent has no
+system-prompt flag, so interactive instructions become its initial prompt, as
+the headless driver similarly prepends them to the run prompt.
 
 ## Workspaces
 
@@ -115,15 +147,15 @@ Do not pass both. IDs are a single path segment, NFC, lowercased; unicode is all
 
 ## Engines
 
-Headless bays implement OpenCode, Claude Code, and Cursor Agent. The interactive
-launcher also implements Codex.
+Interactive launching supports OpenCode, Claude Code, Cursor Agent, and Codex.
+Canonical headless `BayEvent` streaming currently supports the first three.
 
 | ID | CLI | Notes |
 | --- | --- | --- |
 | `opencode` | `opencode` | MCP via `OPENCODE_CONFIG_CONTENT`. Auth under `~/.local/share/opencode`. |
 | `claude-code` | `claude` | MCP via `--mcp-config --strict-mcp-config`. Auth via host `claude login` / Keychain. |
 | `cursor-agent` | `cursor-agent` (`agent`) | MCP via isolated `CURSOR_CONFIG_DIR/mcp.json` + `--approve-mcps`. Auth via `CURSOR_API_KEY` or host `agent login`. |
-| `codex` (interactive) | `codex` | Disposable `CODEX_HOME`; host `~/.codex/auth.json` is attached. |
+| `codex` | `codex` | Interactive launch: MCP and instructions via disposable `CODEX_HOME`; host `auth.json` attached. |
 | `gemini` | later | |
 
 The CLI must already be on `PATH`. enginebay does not vendor engine binaries.
