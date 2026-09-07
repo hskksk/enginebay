@@ -59,6 +59,17 @@ describe("buildClaudeArgs", () => {
       "You are in a bay.",
     );
   });
+
+  it("passes --resume after -p so the prompt is not swallowed", () => {
+    const args = buildClaudeArgs({
+      prompt: "Continue.",
+      mcpConfigPath: "/tmp/mcp.json",
+      sessionId: "sess-9",
+    });
+    expect(args[0]).toBe("-p");
+    expect(args[1]).toBe("Continue.");
+    expect(args[args.indexOf("--resume") + 1]).toBe("sess-9");
+  });
 });
 
 describe("buildClaudeMcpConfig", () => {

@@ -43,6 +43,26 @@ describe("buildOpencodeArgs", () => {
       buildOpencodeArgs({ workDir: "/tmp/work", prompt: "go" }),
     ).not.toContain("--auto");
   });
+
+  it("passes --session when resuming a recovered run", () => {
+    expect(
+      buildOpencodeArgs({
+        workDir: "/tmp/work",
+        prompt: "Continue.",
+        sessionId: "ses_1",
+      }),
+    ).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--dangerously-skip-permissions",
+      "--dir",
+      "/tmp/work",
+      "--session",
+      "ses_1",
+      "Continue.",
+    ]);
+  });
 });
 
 describe("buildOpencodeMcpConfig", () => {

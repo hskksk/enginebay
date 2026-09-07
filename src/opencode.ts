@@ -15,6 +15,7 @@ export function buildOpencodeArgs(options: {
   workDir: string;
   prompt: string;
   model?: string;
+  sessionId?: string;
 }): string[] {
   const args = [
     "run",
@@ -24,6 +25,9 @@ export function buildOpencodeArgs(options: {
     "--dir",
     options.workDir,
   ];
+  if (options.sessionId && options.sessionId.length > 0) {
+    args.push("--session", options.sessionId);
+  }
   if (options.model && options.model.length > 0) {
     args.push("--model", options.model);
   }

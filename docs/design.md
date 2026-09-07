@@ -105,6 +105,13 @@ export type OpenBayOptions = {
   hostHome?: string;
   model?: string;
   git?: { committerName?: string };
+  /** Extra CLI starts after a non-critical failure. Default 2. */
+  recoveryAttempts?: number;
+};
+
+export type BayError = {
+  message: string;
+  critical: boolean;
 };
 
 export type BayEvent =
@@ -114,7 +121,8 @@ export type BayEvent =
   | { kind: "tool_result"; callId: string; tool: string; ok: boolean; result?: unknown }
   | { kind: "tokens"; input?: number; output?: number; total?: number }
   | { kind: "diagnostic"; stream: "stdout" | "stderr"; text: string }
-  | { kind: "exit"; code: number };
+  | { kind: "error"; message: string; critical: boolean }
+  | { kind: "exit"; code: number; error?: BayError };
 
 export type DoctorReport = {
   ok: boolean;
@@ -236,6 +244,7 @@ Shared rules:
 - Auth: attach host `~/.local/share/opencode` (`auth.json` / `auth-v2.json`) without pointing `XDG_DATA_HOME` at an empty temp that hides login. Prefer a dedicated data dir plus a symlink of the auth files.
 - argv: `opencode run --format json --dangerously-skip-permissions --dir <workDir> [--model <id>] <prompt>`
 - Do not use the older PoC flag `--auto`.
+- Crash recovery may pass `--session <id>` on a restarted process; a successful first `run()` does not.
 
 **Claude Code** (second driver)
 
@@ -245,6 +254,7 @@ Shared rules:
 - `--append-system-prompt` for `instructions`
 - Git isolation via `GIT_CONFIG_GLOBAL`, not a fake `HOME`.
 - Do not pass `CLAUDE_CONFIG_DIR` (macOS Keychain namespaces on that path).
+- Crash recovery may pass `--resume <session id>` on a restarted process.
 
 **Cursor Agent**
 
@@ -255,7 +265,7 @@ Shared rules:
 - argv: `cursor-agent -p --force --trust --approve-mcps --sandbox disabled --output-format stream-json --workspace <workDir> [--model <id>] <prompt>`
 - Prefer the unambiguous `cursor-agent` binary; fall back to `agent` when that is what is on `PATH`.
 - The CLI has no `--append-system-prompt`. enginebay prepends `instructions` to the prompt. Do not write `AGENTS.md` into `workDir`.
-- Do not pass `--continue` / `--resume`. Each `run()` is a new process.
+- Do not pass `--continue` / `--resume` on a successful first start. Each successful `run()` is a new process. Non-critical crashes may restart with `--resume <session id>` so the same turn can finish.
 
 For interactive launch, OpenCode, Claude Code, and Cursor Agent reuse these
 same config, auth, MCP, environment, and git-isolation mechanisms. Native argv
@@ -356,10 +366,26 @@ Vendors keep changing stdout. The public stream is `BayEvent` only.
 | `tool_call` | Tool start (`callId` correlates) |
 | `tool_result` | Tool end |
 | `tokens` | Usage if the stream exposes it |
-| `diagnostic` | Non-JSON stderr/stdout the parser skipped |
-| `exit` | Process exit code, always last |
+| `diagnostic` | Non-JSON stderr/stdout the parser skipped; also recovery notices |
+| `error` | Terminal process failure with a cause message and critical flag |
+| `exit` | Process exit code, always last. `error` is set when the run failed |
 
 No `run_start` / `continue_decision`: those are consumer session-loop events. The consumer maps `BayEvent` → its own trace model and adds adapter kinds itself.
+
+### 10.1 Process errors and recovery
+
+`run()` owns CLI process crashes. That is engine knowledge (argv, session ids, vendor error JSON), not a product session loop.
+
+When a child exits non-zero, reports `is_error`, or fails to spawn, enginebay classifies a **cause message** (stderr, spawn error, or engine result text; secrets redacted):
+
+| Class | Examples | `run()` |
+| --- | --- | --- |
+| Critical | missing CLI (`ENOENT`), auth / billing / invalid model, `abort()`, max turns / budget | emit `error` + `exit.error`, stop |
+| Non-critical | rate limit, 429/529, `ECONNRESET`, timeouts, `SIGKILL`/`SIGSEGV`, unknown crash | restart the process (default 2 extra attempts) |
+
+If a session id was captured from the stream (`session_id` / `sessionID`) and the failure is non-critical, the restart **resumes** that session (`opencode run --session`, `claude --resume`, `cursor-agent --resume`) with prompt `Continue.` instead of repeating the original user prompt. A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable this.
+
+Consumers still own when to send the next prompt. Recovery only finishes the in-flight `run()`.
 
 OpenCode v1 parser reads `opencode run --format json` NDJSON (`text`, `reasoning`, `tool_use`, `step_finish`). It does **not** require the eval collector plugin or `opencode export`. If stdout is too thin for thinking/tools, a later slice may add export as a fallback — not in v1.
 

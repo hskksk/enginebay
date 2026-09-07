@@ -140,6 +140,20 @@ describe("parseCursorLine", () => {
     ]);
   });
 
+  it("captures session_id from system init onto insight", () => {
+    const insight: { sessionId?: string; engineErrorMessage?: string } = {};
+    parseCursorLine(
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-cursor",
+      }),
+      new Map(),
+      insight,
+    );
+    expect(insight.sessionId).toBe("sess-cursor");
+  });
+
   it("marks failed tool results and error terminal events", () => {
     const events = parseAll([
       JSON.stringify({

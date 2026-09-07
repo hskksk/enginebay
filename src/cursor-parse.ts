@@ -1,4 +1,10 @@
 import { normalizeToolName } from "./opencode-parse.js";
+import {
+  captureEngineError,
+  captureSessionId,
+  engineErrorFromRaw,
+  type RunInsight,
+} from "./run-insight.js";
 import type { BayEvent } from "./types.js";
 
 type RawRecord = Record<string, unknown>;
@@ -179,6 +185,7 @@ function toolResultOk(result: unknown): boolean {
 export function parseCursorLine(
   line: string,
   toolById: Map<string, string>,
+  insight?: RunInsight,
 ): BayEvent[] {
   const trimmed = line.trim();
   if (trimmed.length === 0) {
@@ -188,6 +195,9 @@ export function parseCursorLine(
   if (!raw) {
     return [{ kind: "diagnostic", stream: "stdout", text: trimmed }];
   }
+
+  captureSessionId(raw, insight);
+  captureEngineError(engineErrorFromRaw(raw), insight);
 
   const events: BayEvent[] = [];
   const tokenEvent = tokensFromRaw(raw);

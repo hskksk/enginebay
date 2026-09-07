@@ -42,10 +42,14 @@ if (dumpDir) {
   const mcpConfigPath =
     mcpConfigIndex >= 0 ? process.argv[mcpConfigIndex + 1] : undefined;
   const gitConfigPath = process.env.GIT_CONFIG_GLOBAL;
-  writeFileSync(
-    join(dumpDir, "argv.json"),
-    `${JSON.stringify(process.argv.slice(2), null, 2)}\n`,
-  );
+  const countPath = join(dumpDir, "count");
+  const spawnCount = existsSync(countPath)
+    ? Number(readFileSync(countPath, "utf8")) + 1
+    : 1;
+  writeFileSync(countPath, `${spawnCount}\n`);
+  const argvJson = `${JSON.stringify(process.argv.slice(2), null, 2)}\n`;
+  writeFileSync(join(dumpDir, "argv.json"), argvJson);
+  writeFileSync(join(dumpDir, `argv-${spawnCount}.json`), argvJson);
   writeFileSync(
     join(dumpDir, "env.json"),
     `${JSON.stringify(
@@ -90,6 +94,30 @@ if (dumpDir) {
       2,
     )}\n`,
   );
+}
+
+const argv = process.argv.slice(2);
+const isResume =
+  argv.includes("--resume") || argv.includes("--session") || argv.includes("-s");
+const failUnlessResume = process.env.ENGINEBAY_FAKE_FAIL_UNLESS_RESUME;
+if (failUnlessResume && failUnlessResume.length > 0 && !isResume) {
+  const sessionEvent =
+    process.env.ENGINEBAY_FAKE_SESSION_EVENT &&
+    process.env.ENGINEBAY_FAKE_SESSION_EVENT.length > 0
+      ? process.env.ENGINEBAY_FAKE_SESSION_EVENT
+      : JSON.stringify({
+          type: "system",
+          subtype: "init",
+          session_id: "sess-recover",
+          sessionID: "sess-recover",
+        });
+  process.stdout.write(
+    sessionEvent.endsWith("\n") ? sessionEvent : `${sessionEvent}\n`,
+  );
+  process.stderr.write(
+    failUnlessResume.endsWith("\n") ? failUnlessResume : `${failUnlessResume}\n`,
+  );
+  process.exit(1);
 }
 
 const events = process.env.ENGINEBAY_FAKE_EVENTS;

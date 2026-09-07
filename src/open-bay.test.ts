@@ -209,6 +209,222 @@ describe("openBay OpenCode isolation", () => {
   });
 });
 
+describe("openBay process error recovery", () => {
+  it("restarts and resumes after a non-critical crash", async () => {
+    const hostHome = await tempDir("enginebay-recover-host-");
+    const workDir = await tempDir("enginebay-recover-work-");
+    const binDir = await tempDir("enginebay-recover-bin-");
+    const dumpDir = await tempDir("enginebay-recover-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_UNLESS_RESUME: "ECONNRESET: connection reset",
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_recover",
+        }),
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "text",
+          part: { type: "text", text: "resumed ok" },
+        }),
+      },
+    });
+
+    const events = await collectEvents(bay, "read the briefing");
+    await bay.close();
+
+    expect(events.map((event) => event.kind)).toEqual([
+      "diagnostic",
+      "diagnostic",
+      "text",
+      "exit",
+    ]);
+    expect(events[0]).toMatchObject({
+      kind: "diagnostic",
+      stream: "stderr",
+      text: "ECONNRESET: connection reset",
+    });
+    expect(events[1]).toMatchObject({
+      kind: "diagnostic",
+      stream: "stderr",
+    });
+    expect((events[1] as { text: string }).text).toMatch(
+      /non-critical error; restarting process and resuming session/,
+    );
+    expect(events[2]).toEqual({ kind: "text", text: "resumed ok" });
+    expect(events[3]).toEqual({ kind: "exit", code: 0 });
+
+    const firstArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-1.json"), "utf8"),
+    ) as string[];
+    const secondArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-2.json"), "utf8"),
+    ) as string[];
+    expect(firstArgv).not.toContain("--session");
+    expect(firstArgv.at(-1)).toBe("read the briefing");
+    expect(secondArgv[secondArgv.indexOf("--session") + 1]).toBe("ses_recover");
+    expect(secondArgv.at(-1)).toBe("Continue.");
+    expect(existsSync(join(dumpDir, "argv-3.json"))).toBe(false);
+  });
+
+  it("returns a critical error without restarting after auth failure", async () => {
+    const hostHome = await tempDir("enginebay-crit-host-");
+    const workDir = await tempDir("enginebay-crit-work-");
+    const binDir = await tempDir("enginebay-crit-bin-");
+    const dumpDir = await tempDir("enginebay-crit-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_STDERR: "Authentication required\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 2,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+
+    expect(events).toContainEqual({
+      kind: "diagnostic",
+      stream: "stderr",
+      text: "Authentication required",
+    });
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toEqual({
+      kind: "error",
+      message: "enginebay: Authentication required",
+      critical: true,
+    });
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 1,
+      error: {
+        message: "enginebay: Authentication required",
+        critical: true,
+      },
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("reports a critical error when the CLI is missing", async () => {
+    const emptyPath = await tempDir("enginebay-missing-cli-");
+    const workDir = await tempDir("enginebay-missing-work-");
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome: emptyPath,
+      hostEnv: { HOME: emptyPath, PATH: emptyPath },
+      recoveryAttempts: 2,
+    });
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toMatchObject({ kind: "error", critical: true });
+    expect((errorEvent as { message: string }).message).toMatch(
+      /ENOENT|not found|could not launch/i,
+    );
+    expect(events.at(-1)).toMatchObject({
+      kind: "exit",
+      error: { critical: true },
+    });
+  });
+
+  it("redacts secrets in process error messages", async () => {
+    const hostHome = await tempDir("enginebay-err-redact-host-");
+    const workDir = await tempDir("enginebay-err-redact-work-");
+    const binDir = await tempDir("enginebay-err-redact-bin-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_FAKE_STDERR: "authentication failed token ghs_LIVESECRET99\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 0,
+    });
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(JSON.stringify(events)).not.toContain("ghs_LIVESECRET99");
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toMatchObject({
+      kind: "error",
+      critical: true,
+    });
+    expect((errorEvent as { message: string }).message).toMatch(/\[redacted\]/);
+  });
+
+  it("resumes a cursor-agent session after a non-critical crash", async () => {
+    const hostHome = await tempDir("enginebay-cursor-recover-host-");
+    const workDir = await tempDir("enginebay-cursor-recover-work-");
+    const binDir = await tempDir("enginebay-cursor-recover-bin-");
+    const dumpDir = await tempDir("enginebay-cursor-recover-dump-");
+    await installFakeCommand(binDir, "cursor-agent");
+
+    const bay = await openBay({
+      engine: "cursor-agent",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_UNLESS_RESUME: "socket hang up",
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "cursor resumed" }],
+          },
+        }),
+      },
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.map((event) => event.kind)).toEqual([
+      "diagnostic",
+      "diagnostic",
+      "text",
+      "exit",
+    ]);
+    expect(events[2]).toEqual({ kind: "text", text: "cursor resumed" });
+    const secondArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-2.json"), "utf8"),
+    ) as string[];
+    expect(secondArgv[secondArgv.indexOf("--resume") + 1]).toBe("sess-recover");
+    expect(secondArgv.at(-1)).toBe("Continue.");
+  });
+});
+
 describe("openBay Claude Code isolation", () => {
   it("keeps host HOME, writes MCP to a temp file, and isolates git", async () => {
     const hostHome = await tempDir("enginebay-claude-host-");

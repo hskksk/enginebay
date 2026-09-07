@@ -56,13 +56,15 @@ const bay = await openBay({
 });
 
 for await (const event of bay.run("Read the briefing and set today's goals.")) {
-  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "diagnostic" | "exit"
+  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "diagnostic" | "error" | "exit"
 }
 
 await bay.close();
 ```
 
-Each `run()` is a **fresh CLI process**. Conversation continuity is the consumer's job (a redrive prompt), not `--continue` inside the engine.
+Each `run()` starts a **fresh CLI process**. Conversation continuity across successful turns is the consumer's job (a redrive prompt), not `--continue` inside the engine.
+
+If the CLI dies mid-turn with a **non-critical** error (rate limit, network reset, crash), `run()` restarts the process and resumes the captured engine session so that turn can finish. Auth failures, a missing binary, and `abort()` are **critical**: the stream yields `{ kind: "error", message, critical: true }` and `exit.error` with the cause. Set `recoveryAttempts: 0` on `openBay` to disable restart.
 
 ## Interactive CLI
 

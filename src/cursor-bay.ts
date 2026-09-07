@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { iterateRecoverableRun } from "./bay-run.js";
 import {
   attachCursorAuth,
   buildCursorArgs,
@@ -16,7 +17,10 @@ import {
   buildChildEnv,
 } from "./env.js";
 import { writeIsolatedGitconfig } from "./gitconfig.js";
-import { redactBayEvent } from "./opencode-parse.js";
+import {
+  DEFAULT_RECOVERY_ATTEMPTS,
+  RECOVERY_CONTINUE_PROMPT,
+} from "./process-error.js";
 import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
@@ -42,8 +46,10 @@ class CursorBay implements Bay {
   private committerName: string;
   private readonly instructions: string | undefined;
   private readonly gitconfigPath: string;
+  private readonly recoveryAttempts: number;
   private running: SpawnedRun | undefined;
   private closed = false;
+  private aborted = false;
   private readonly toolById = new Map<string, string>();
 
   constructor(input: {
@@ -58,6 +64,7 @@ class CursorBay implements Bay {
     committerName: string;
     instructions: string | undefined;
     gitconfigPath: string;
+    recoveryAttempts?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -71,6 +78,8 @@ class CursorBay implements Bay {
     this.committerName = input.committerName;
     this.instructions = input.instructions;
     this.gitconfigPath = input.gitconfigPath;
+    this.recoveryAttempts =
+      input.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS;
   }
 
   async updateExtraEnv(
@@ -85,6 +94,7 @@ class CursorBay implements Bay {
   }
 
   async abort(): Promise<void> {
+    this.aborted = true;
     await this.running?.kill("SIGTERM");
     this.running = undefined;
   }
@@ -106,38 +116,32 @@ class CursorBay implements Bay {
     if (this.running) {
       await this.abort();
     }
-    this.toolById.clear();
-    const spawned = spawnLineProcess({
-      command: this.command,
-      args: buildCursorArgs({
-        prompt,
-        workDir: this.workDir,
-        model: this.model,
-        instructions: this.instructions,
-      }),
-      cwd: this.workDir,
-      env: this.childEnv(),
+    this.aborted = false;
+    yield* iterateRecoverableRun({
+      recoveryAttempts: this.recoveryAttempts,
+      isStopped: () => this.closed || this.aborted,
+      setRunning: (run) => {
+        this.running = run;
+      },
+      resetParser: () => {
+        this.toolById.clear();
+      },
+      parseLine: (line, insight) =>
+        parseCursorLine(line, this.toolById, insight),
+      spawn: (resumeSessionId) =>
+        spawnLineProcess({
+          command: this.command,
+          args: buildCursorArgs({
+            prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
+            workDir: this.workDir,
+            model: this.model,
+            instructions: resumeSessionId ? undefined : this.instructions,
+            sessionId: resumeSessionId,
+          }),
+          cwd: this.workDir,
+          env: this.childEnv(),
+        }),
     });
-    this.running = spawned;
-    try {
-      for await (const line of spawned.stdout) {
-        for (const event of parseCursorLine(line, this.toolById)) {
-          yield redactBayEvent(event);
-        }
-      }
-      const finished = await spawned.wait();
-      const stderr = finished.stderr.trim();
-      if (stderr.length > 0) {
-        yield redactBayEvent({
-          kind: "diagnostic",
-          stream: "stderr",
-          text: stderr,
-        });
-      }
-      yield { kind: "exit", code: finished.code };
-    } finally {
-      this.running = undefined;
-    }
   }
 
   private childEnv(): NodeJS.ProcessEnv {
@@ -208,6 +212,7 @@ export async function openCursorBay(
         ? options.instructions
         : undefined,
     gitconfigPath,
+    recoveryAttempts: options.recoveryAttempts,
   });
   await bay.syncGitconfig();
   return bay;

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { iterateRecoverableRun } from "./bay-run.js";
 import {
   applyClaudeCredentialEnv,
   buildClaudeArgs,
@@ -14,7 +15,10 @@ import {
   extraEnvHasGitToken,
 } from "./env.js";
 import { writeIsolatedGitconfig } from "./gitconfig.js";
-import { redactBayEvent } from "./opencode-parse.js";
+import {
+  DEFAULT_RECOVERY_ATTEMPTS,
+  RECOVERY_CONTINUE_PROMPT,
+} from "./process-error.js";
 import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
@@ -39,8 +43,10 @@ class ClaudeBay implements Bay {
   private readonly instructions: string | undefined;
   private readonly mcpConfigPath: string;
   private readonly gitconfigPath: string;
+  private readonly recoveryAttempts: number;
   private running: SpawnedRun | undefined;
   private closed = false;
+  private aborted = false;
   private readonly toolById = new Map<string, string>();
 
   constructor(input: {
@@ -54,6 +60,7 @@ class ClaudeBay implements Bay {
     instructions: string | undefined;
     mcpConfigPath: string;
     gitconfigPath: string;
+    recoveryAttempts?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -66,6 +73,8 @@ class ClaudeBay implements Bay {
     this.instructions = input.instructions;
     this.mcpConfigPath = input.mcpConfigPath;
     this.gitconfigPath = input.gitconfigPath;
+    this.recoveryAttempts =
+      input.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS;
   }
 
   async updateExtraEnv(
@@ -80,6 +89,7 @@ class ClaudeBay implements Bay {
   }
 
   async abort(): Promise<void> {
+    this.aborted = true;
     await this.running?.kill("SIGTERM");
     this.running = undefined;
   }
@@ -101,38 +111,32 @@ class ClaudeBay implements Bay {
     if (this.running) {
       await this.abort();
     }
-    this.toolById.clear();
-    const spawned = spawnLineProcess({
-      command: CLAUDE_COMMAND,
-      args: buildClaudeArgs({
-        prompt,
-        mcpConfigPath: this.mcpConfigPath,
-        appendSystemPrompt: this.instructions,
-        model: this.model,
-      }),
-      cwd: this.workDir,
-      env: this.childEnv(),
+    this.aborted = false;
+    yield* iterateRecoverableRun({
+      recoveryAttempts: this.recoveryAttempts,
+      isStopped: () => this.closed || this.aborted,
+      setRunning: (run) => {
+        this.running = run;
+      },
+      resetParser: () => {
+        this.toolById.clear();
+      },
+      parseLine: (line, insight) =>
+        parseClaudeLine(line, this.toolById, insight),
+      spawn: (resumeSessionId) =>
+        spawnLineProcess({
+          command: CLAUDE_COMMAND,
+          args: buildClaudeArgs({
+            prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
+            mcpConfigPath: this.mcpConfigPath,
+            appendSystemPrompt: this.instructions,
+            model: this.model,
+            sessionId: resumeSessionId,
+          }),
+          cwd: this.workDir,
+          env: this.childEnv(),
+        }),
     });
-    this.running = spawned;
-    try {
-      for await (const line of spawned.stdout) {
-        for (const event of parseClaudeLine(line, this.toolById)) {
-          yield redactBayEvent(event);
-        }
-      }
-      const finished = await spawned.wait();
-      const stderr = finished.stderr.trim();
-      if (stderr.length > 0) {
-        yield redactBayEvent({
-          kind: "diagnostic",
-          stream: "stderr",
-          text: stderr,
-        });
-      }
-      yield { kind: "exit", code: finished.code };
-    } finally {
-      this.running = undefined;
-    }
   }
 
   private childEnv(): NodeJS.ProcessEnv {
@@ -194,6 +198,7 @@ export async function openClaudeBay(
         : undefined,
     mcpConfigPath,
     gitconfigPath,
+    recoveryAttempts: options.recoveryAttempts,
   });
   await bay.syncGitconfig();
   return bay;

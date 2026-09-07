@@ -105,6 +105,26 @@ describe("parseOpencodeLine", () => {
     ).toEqual([{ kind: "tokens", input: 10, output: 20, total: 30 }]);
   });
 
+  it("captures session IDs and error events on insight", () => {
+    const insight: { sessionId?: string; engineErrorMessage?: string } = {};
+    const events = parseOpencodeLine(
+      JSON.stringify({
+        type: "error",
+        sessionID: "ses_9",
+        error: { data: { message: "provider overloaded" } },
+      }),
+      new Set(),
+      insight,
+    );
+    expect(insight.sessionId).toBe("ses_9");
+    expect(insight.engineErrorMessage).toBe("provider overloaded");
+    expect(events).toContainEqual({
+      kind: "diagnostic",
+      stream: "stdout",
+      text: "provider overloaded",
+    });
+  });
+
   it("treats non-JSON stdout as a diagnostic and ignores unknown JSON types", () => {
     expect(parseAll(["not json", JSON.stringify({ type: "session.created" })])).toEqual([
       { kind: "diagnostic", stream: "stdout", text: "not json" },
@@ -132,5 +152,27 @@ describe("redactBayEvent", () => {
         args: { token: "github_pat_zzz" },
       }),
     ).toMatchObject({ args: { token: "[redacted]" } });
+    expect(
+      redactBayEvent({
+        kind: "error",
+        message: "token ghs_LIVESECRET99",
+        critical: true,
+      }),
+    ).toEqual({
+      kind: "error",
+      message: "token [redacted]",
+      critical: true,
+    });
+    expect(
+      redactBayEvent({
+        kind: "exit",
+        code: 1,
+        error: { message: "Bearer abc.def leaked", critical: false },
+      }),
+    ).toEqual({
+      kind: "exit",
+      code: 1,
+      error: { message: "[redacted] leaked", critical: false },
+    });
   });
 });

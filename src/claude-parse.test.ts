@@ -59,6 +59,32 @@ describe("parseClaudeLine", () => {
     ]);
   });
 
+  it("captures session_id and result errors on insight", () => {
+    const insight: { sessionId?: string; engineErrorMessage?: string } = {};
+    parseClaudeLine(
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-claude",
+      }),
+      new Map(),
+      insight,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: "result",
+        subtype: "error",
+        is_error: true,
+        session_id: "sess-claude",
+        result: "Authentication required",
+      }),
+      new Map(),
+      insight,
+    );
+    expect(insight.sessionId).toBe("sess-claude");
+    expect(insight.engineErrorMessage).toBe("Authentication required");
+  });
+
   it("treats non-JSON stdout as a diagnostic", () => {
     expect(parseAll(["not json"])).toEqual([
       { kind: "diagnostic", stream: "stdout", text: "not json" },
