@@ -4,6 +4,8 @@ import {
   clipErrorText,
   isCriticalErrorMessage,
   recoveryDiagnostic,
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
 } from "./process-error.js";
 
 describe("classifyProcessFailure", () => {
@@ -207,6 +209,41 @@ describe("recoveryDiagnostic", () => {
         sessionId: "sess-1",
       }),
     ).toMatch(/resuming session \(attempt 2\/3\): enginebay: ECONNRESET/);
+  });
+});
+
+describe("resolveRecoveryAttempts", () => {
+  it("defaults to 2 and rejects non-integers", () => {
+    expect(resolveRecoveryAttempts(undefined)).toBe(2);
+    expect(resolveRecoveryAttempts(0)).toBe(0);
+    expect(() => resolveRecoveryAttempts(Number.POSITIVE_INFINITY)).toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    expect(() => resolveRecoveryAttempts(Number.NaN)).toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    expect(() => resolveRecoveryAttempts(-1)).toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    expect(() => resolveRecoveryAttempts(1.5)).toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+  });
+});
+
+describe("resolveRecoveryBackoffMs", () => {
+  it("defaults to 250 and rejects negative or non-finite values", () => {
+    expect(resolveRecoveryBackoffMs(undefined)).toBe(250);
+    expect(resolveRecoveryBackoffMs(0)).toBe(0);
+    expect(() => resolveRecoveryBackoffMs(-1)).toThrow(
+      /recoveryBackoffMs must be a non-negative number/,
+    );
+    expect(() => resolveRecoveryBackoffMs(Number.NaN)).toThrow(
+      /recoveryBackoffMs must be a non-negative number/,
+    );
+    expect(() => resolveRecoveryBackoffMs(Number.POSITIVE_INFINITY)).toThrow(
+      /recoveryBackoffMs must be a non-negative number/,
+    );
   });
 });
 

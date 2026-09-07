@@ -42,6 +42,11 @@ export type OpenBayOptions = {
    * Set 0 to disable restart/resume recovery.
    */
   recoveryAttempts?: number;
+  /**
+   * Delay in ms before a resume restart, multiplied by the attempt number.
+   * Default 250. Set 0 to retry immediately.
+   */
+  recoveryBackoffMs?: number;
 };
 
 export type BayError = {

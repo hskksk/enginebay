@@ -1,7 +1,28 @@
 import type { BayError } from "./types.js";
 
 export const DEFAULT_RECOVERY_ATTEMPTS = 2;
+export const DEFAULT_RECOVERY_BACKOFF_MS = 250;
 export const RECOVERY_CONTINUE_PROMPT = "Continue.";
+
+export function resolveRecoveryAttempts(value: number | undefined): number {
+  const n = value ?? DEFAULT_RECOVERY_ATTEMPTS;
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(
+      "enginebay: recoveryAttempts must be a non-negative integer",
+    );
+  }
+  return n;
+}
+
+export function resolveRecoveryBackoffMs(value: number | undefined): number {
+  const n = value ?? DEFAULT_RECOVERY_BACKOFF_MS;
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(
+      "enginebay: recoveryBackoffMs must be a non-negative number",
+    );
+  }
+  return n;
+}
 
 const MAX_ERROR_CHARS = 2000;
 

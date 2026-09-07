@@ -1,12 +1,55 @@
 import { redactBayEvent } from "./opencode-parse.js";
 import {
   classifyProcessFailure,
-  DEFAULT_RECOVERY_ATTEMPTS,
   recoveryDiagnostic,
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
 } from "./process-error.js";
 import type { RunInsight } from "./run-insight.js";
 import type { SpawnedRun } from "./spawn.js";
 import type { BayError, BayEvent } from "./types.js";
+
+export class BayProcessControl {
+  private seq = 0;
+  private running: { seq: number; child: SpawnedRun } | undefined;
+  closed = false;
+
+  async abort(): Promise<void> {
+    this.seq += 1;
+    const current = this.running;
+    this.running = undefined;
+    await current?.child.kill("SIGTERM");
+  }
+
+  async beginRun(): Promise<{
+    isStopped: () => boolean;
+    setRunning: (run: SpawnedRun | undefined) => void;
+  }> {
+    const seq = ++this.seq;
+    const previous = this.running;
+    this.running = undefined;
+    await previous?.child.kill("SIGTERM");
+    return {
+      isStopped: () => this.closed || this.seq !== seq,
+      setRunning: (run) => {
+        if (this.seq !== seq) {
+          void run?.kill("SIGTERM");
+          return;
+        }
+        this.running = run ? { seq, child: run } : undefined;
+      },
+    };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 export async function* iterateRecoverableRun(input: {
   spawn: (resumeSessionId: string | undefined) => SpawnedRun;
@@ -15,9 +58,11 @@ export async function* iterateRecoverableRun(input: {
   setRunning: (run: SpawnedRun | undefined) => void;
   isStopped: () => boolean;
   recoveryAttempts?: number;
+  recoveryBackoffMs?: number;
 }): AsyncIterable<BayEvent> {
-  const extra = input.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS;
-  const maxAttempts = 1 + Math.max(0, extra);
+  const extra = resolveRecoveryAttempts(input.recoveryAttempts);
+  const maxAttempts = 1 + extra;
+  const backoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   let sessionId: string | undefined;
   let lastError: BayError | undefined;
   let lastCode = 1;
@@ -77,7 +122,10 @@ export async function* iterateRecoverableRun(input: {
         aborted: stopped,
       });
       const canRetry =
-        !lastError.critical && attempt < maxAttempts && !stopped;
+        !lastError.critical &&
+        attempt < maxAttempts &&
+        !stopped &&
+        Boolean(sessionId);
       if (canRetry) {
         yield redactBayEvent({
           kind: "diagnostic",
@@ -89,10 +137,20 @@ export async function* iterateRecoverableRun(input: {
             sessionId,
           }),
         });
+        await sleep(backoffMs * attempt);
+        if (input.isStopped()) {
+          lastError = classifyProcessFailure({
+            code: lastCode,
+            stderr: "",
+            aborted: true,
+          });
+          break;
+        }
         continue;
       }
       break;
     } finally {
+      await spawned.kill("SIGTERM");
       input.setRunning(undefined);
     }
   }

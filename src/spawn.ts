@@ -127,7 +127,12 @@ export function spawnLineProcess(options: {
   }
 
   async function kill(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
-    if (child.exitCode !== null || child.signalCode !== null) {
+    if (
+      child.exitCode !== null ||
+      child.signalCode !== null ||
+      spawnError !== undefined ||
+      child.pid === undefined
+    ) {
       return;
     }
     await new Promise<void>((resolve) => {

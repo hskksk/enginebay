@@ -105,8 +105,13 @@ export type OpenBayOptions = {
   hostHome?: string;
   model?: string;
   git?: { committerName?: string };
-  /** Extra CLI starts after a non-critical failure. Default 2. */
+  /** Extra CLI starts after a non-critical failure. Default 2. Must be a non-negative integer. */
   recoveryAttempts?: number;
+  /**
+   * Delay in ms before a resume restart, multiplied by the attempt number.
+   * Default 250. Set 0 to retry immediately.
+   */
+  recoveryBackoffMs?: number;
 };
 
 export type BayError = {
@@ -378,6 +383,8 @@ No `run_start` / `continue_decision`: those are consumer session-loop events. Th
 
 Resume is a **follow-up turn** on the persisted session, which is how all three CLIs actually work. None of them expose a "replay the crashed generation" API. enginebay therefore restarts the process and sends `Continue.` with the engine's native resume flag.
 
+Resume happens only when the failed process had already emitted a session id. Without one, a restart would re-send the original prompt and can duplicate tool calls or edits, so `run()` fails instead of retrying.
+
 Session storage that makes in-bay resume possible:
 
 | Engine | Session location | Resume flag |
@@ -395,7 +402,9 @@ How a failed process is classified (vendor fields first, message fallbacks secon
 | Cursor Agent | documented failure path is **non-zero exit + stderr**, often **no terminal `result`** | auth / missing CLI in stderr | socket hang up, crash, unknown non-zero with no auth text |
 | All | spawn / abort | `ENOENT`, `abort()` | `SIGKILL` / `SIGSEGV` and similar crashes |
 
-A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable restart.
+A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable restart. `recoveryAttempts` must be a non-negative integer; invalid values throw. `recoveryBackoffMs` (default 250) delays each resume restart, multiplied by the attempt number; `0` retries immediately.
+
+Cancelling the `run()` iterator (`break`, `.return()`, or a thrown consumer error) SIGTERMs the child. A later `run()` on the same bay invalidates the previous iterator so it cannot restart after that SIGTERM, and it cannot clear the new child via `setRunning(undefined)`.
 
 Consumers still own when to send the next prompt. Recovery only finishes the in-flight `run()`.
 

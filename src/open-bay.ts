@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { iterateRecoverableRun } from "./bay-run.js";
+import { iterateRecoverableRun, BayProcessControl } from "./bay-run.js";
 import { commandExists, readCommandVersion } from "./command.js";
 import {
   buildChildEnv,
@@ -32,10 +32,11 @@ import {
   cursorAuthPresent,
 } from "./cursor.js";
 import {
-  DEFAULT_RECOVERY_ATTEMPTS,
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
   RECOVERY_CONTINUE_PROMPT,
 } from "./process-error.js";
-import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
+import { spawnLineProcess } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 import { prepareWorkspace } from "./workspace.js";
@@ -62,9 +63,8 @@ class OpencodeBay implements Bay {
   private readonly mcpConfig: Record<string, unknown>;
   private readonly gitconfigPath: string;
   private readonly recoveryAttempts: number;
-  private running: SpawnedRun | undefined;
-  private closed = false;
-  private aborted = false;
+  private readonly recoveryBackoffMs: number;
+  private readonly control = new BayProcessControl();
   private readonly seenToolCalls = new Set<string>();
 
   constructor(input: {
@@ -80,6 +80,7 @@ class OpencodeBay implements Bay {
     mcpConfig: Record<string, unknown>;
     gitconfigPath: string;
     recoveryAttempts?: number;
+    recoveryBackoffMs?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -93,8 +94,8 @@ class OpencodeBay implements Bay {
     this.instructionsPath = input.instructionsPath;
     this.mcpConfig = input.mcpConfig;
     this.gitconfigPath = input.gitconfigPath;
-    this.recoveryAttempts =
-      input.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS;
+    this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
+    this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
 
   async updateExtraEnv(
@@ -109,14 +110,12 @@ class OpencodeBay implements Bay {
   }
 
   async abort(): Promise<void> {
-    this.aborted = true;
-    await this.running?.kill("SIGTERM");
-    this.running = undefined;
+    await this.control.abort();
   }
 
   async close(): Promise<void> {
-    await this.abort();
-    this.closed = true;
+    this.control.closed = true;
+    await this.control.abort();
     const jobs = [
       rm(this.runtimeDir, RM_OPTS),
       rm(this.dataDir, RM_OPTS),
@@ -128,19 +127,15 @@ class OpencodeBay implements Bay {
   }
 
   async *run(prompt: string): AsyncIterable<BayEvent> {
-    if (this.closed) {
+    if (this.control.closed) {
       throw new Error("enginebay: bay is closed");
     }
-    if (this.running) {
-      await this.abort();
-    }
-    this.aborted = false;
+    const { isStopped, setRunning } = await this.control.beginRun();
     yield* iterateRecoverableRun({
       recoveryAttempts: this.recoveryAttempts,
-      isStopped: () => this.closed || this.aborted,
-      setRunning: (run) => {
-        this.running = run;
-      },
+      recoveryBackoffMs: this.recoveryBackoffMs,
+      isStopped,
+      setRunning,
       resetParser: () => {
         this.seenToolCalls.clear();
       },
@@ -199,6 +194,8 @@ class OpencodeBay implements Bay {
 }
 
 export async function openBay(options: OpenBayOptions): Promise<Bay> {
+  resolveRecoveryAttempts(options.recoveryAttempts);
+  resolveRecoveryBackoffMs(options.recoveryBackoffMs);
   const isolation = options.isolation?.kind ?? "env";
   if (isolation !== "env") {
     throw new Error(`enginebay: isolation ${isolation} is not implemented`);
@@ -274,6 +271,7 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
     mcpConfig,
     gitconfigPath,
     recoveryAttempts: options.recoveryAttempts,
+    recoveryBackoffMs: options.recoveryBackoffMs,
   });
   await bay.syncGitconfig();
   return bay;
