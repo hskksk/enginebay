@@ -71,6 +71,9 @@ export async function* iterateRecoverableRun(input: {
         stderr,
         spawnError: finished.spawnError,
         engineErrorMessage: insight.engineErrorMessage,
+        engineErrorName: insight.engineErrorName,
+        engineResultSubtype: insight.engineResultSubtype,
+        engineRetryable: insight.engineRetryable,
         aborted: stopped,
       });
       const canRetry =

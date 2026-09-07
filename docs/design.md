@@ -374,16 +374,28 @@ No `run_start` / `continue_decision`: those are consumer session-loop events. Th
 
 ### 10.1 Process errors and recovery
 
-`run()` owns CLI process crashes. That is engine knowledge (argv, session ids, vendor error JSON), not a product session loop.
+`run()` owns CLI process failures. That is engine knowledge (argv, session ids, vendor error JSON), not a product session loop.
 
-When a child exits non-zero, reports `is_error`, or fails to spawn, enginebay classifies a **cause message** (stderr, spawn error, or engine result text; secrets redacted):
+Resume is a **follow-up turn** on the persisted session, which is how all three CLIs actually work. None of them expose a "replay the crashed generation" API. enginebay therefore restarts the process and sends `Continue.` with the engine's native resume flag.
 
-| Class | Examples | `run()` |
+Session storage that makes in-bay resume possible:
+
+| Engine | Session location | Resume flag |
 | --- | --- | --- |
-| Critical | missing CLI (`ENOENT`), auth / billing / invalid model, `abort()`, max turns / budget | emit `error` + `exit.error`, stop |
-| Non-critical | rate limit, 429/529, `ECONNRESET`, timeouts, `SIGKILL`/`SIGSEGV`, unknown crash | restart the process (default 2 extra attempts) |
+| OpenCode | isolated XDG data dir for the bay (`ses_*` ids on every JSON event) | `opencode run --session <id>` |
+| Claude Code | host `~/.claude/projects/<encoded-cwd>/*.jsonl` (real `HOME`, no `CLAUDE_CONFIG_DIR`) | `claude -p --resume <id>` |
+| Cursor Agent | isolated `CURSOR_CONFIG_DIR` (`session_id` UUID on stream-json events; chats under that dir) | `cursor-agent -p --resume <id>` |
 
-If a session id was captured from the stream (`session_id` / `sessionID`) and the failure is non-critical, the restart **resumes** that session (`opencode run --session`, `claude --resume`, `cursor-agent --resume`) with prompt `Continue.` instead of repeating the original user prompt. A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable this.
+How a failed process is classified (vendor fields first, message fallbacks second):
+
+| Engine | Source | Critical | Non-critical |
+| --- | --- | --- | --- |
+| OpenCode | `type:"error"` → `error.name` + `error.data.isRetryable` | `ProviderAuthError`, `MessageAbortedError`, `MessageOutputLengthError`, `ContextOverflowError`, `StructuredOutputError`, `APIError` with `isRetryable: false` | `APIError` with `isRetryable: true` (rate limit / 429 / ECONNRESET) |
+| Claude Code | `type:"result"` subtype | `error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`; auth in `errors[]` | `error_during_execution` (API failure / cancelled request); process death before a result |
+| Cursor Agent | documented failure path is **non-zero exit + stderr**, often **no terminal `result`** | auth / missing CLI in stderr | socket hang up, crash, unknown non-zero with no auth text |
+| All | spawn / abort | `ENOENT`, `abort()` | `SIGKILL` / `SIGSEGV` and similar crashes |
+
+A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable restart.
 
 Consumers still own when to send the next prompt. Recovery only finishes the in-flight `run()`.
 

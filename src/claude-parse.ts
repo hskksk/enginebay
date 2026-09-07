@@ -1,8 +1,6 @@
 import { normalizeToolName } from "./opencode-parse.js";
 import {
-  captureEngineError,
-  captureSessionId,
-  engineErrorFromRaw,
+  captureEngineEvent,
   type RunInsight,
 } from "./run-insight.js";
 import type { BayEvent } from "./types.js";
@@ -62,8 +60,7 @@ export function parseClaudeLine(
     return [{ kind: "diagnostic", stream: "stdout", text: trimmed }];
   }
 
-  captureSessionId(raw, insight);
-  captureEngineError(engineErrorFromRaw(raw), insight);
+  captureEngineEvent(raw, insight);
 
   const events: BayEvent[] = [];
   const message = asRecord(raw.message);

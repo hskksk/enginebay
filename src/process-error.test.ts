@@ -28,6 +28,93 @@ describe("classifyProcessFailure", () => {
     expect(error.message).toMatch(/ENOENT/);
   });
 
+  it("uses OpenCode error.name and isRetryable", () => {
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineErrorName: "ProviderAuthError",
+        engineErrorMessage: "provider not configured",
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineErrorName: "APIError",
+        engineErrorMessage: "Rate limit exceeded",
+        engineRetryable: true,
+        aborted: false,
+      }).critical,
+    ).toBe(false);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineErrorName: "APIError",
+        engineErrorMessage: "permission denied by provider",
+        engineRetryable: false,
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+  });
+
+  it("uses Claude result subtypes", () => {
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineResultSubtype: "error_max_turns",
+        engineErrorMessage: "error_max_turns",
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineResultSubtype: "error_max_budget_usd",
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineResultSubtype: "error_during_execution",
+        engineErrorMessage: "API error: 529 overloaded",
+        aborted: false,
+      }).critical,
+    ).toBe(false);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "",
+        engineResultSubtype: "error_during_execution",
+        engineErrorMessage: "authentication required",
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+  });
+
+  it("treats Cursor-style stderr failures without a result event", () => {
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "socket hang up",
+        aborted: false,
+      }).critical,
+    ).toBe(false);
+    expect(
+      classifyProcessFailure({
+        code: 1,
+        stderr: "Authentication required",
+        aborted: false,
+      }).critical,
+    ).toBe(true);
+  });
+
   it("treats authentication and billing messages as critical", () => {
     expect(
       classifyProcessFailure({
@@ -104,8 +191,7 @@ describe("classifyProcessFailure", () => {
 });
 
 describe("isCriticalErrorMessage", () => {
-  it("detects max-turn and missing-CLI wording", () => {
-    expect(isCriticalErrorMessage("error_max_turns")).toBe(true);
+  it("detects missing-CLI wording without relying on Claude subtypes", () => {
     expect(isCriticalErrorMessage("command not found")).toBe(true);
     expect(isCriticalErrorMessage("socket hang up")).toBe(false);
   });

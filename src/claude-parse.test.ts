@@ -59,8 +59,12 @@ describe("parseClaudeLine", () => {
     ]);
   });
 
-  it("captures session_id and result errors on insight", () => {
-    const insight: { sessionId?: string; engineErrorMessage?: string } = {};
+  it("captures session_id, result subtype, and errors[] on insight", () => {
+    const insight: {
+      sessionId?: string;
+      engineErrorMessage?: string;
+      engineResultSubtype?: string;
+    } = {};
     parseClaudeLine(
       JSON.stringify({
         type: "system",
@@ -73,16 +77,17 @@ describe("parseClaudeLine", () => {
     parseClaudeLine(
       JSON.stringify({
         type: "result",
-        subtype: "error",
+        subtype: "error_during_execution",
         is_error: true,
         session_id: "sess-claude",
-        result: "Authentication required",
+        errors: ["API error: 529 overloaded"],
       }),
       new Map(),
       insight,
     );
     expect(insight.sessionId).toBe("sess-claude");
-    expect(insight.engineErrorMessage).toBe("Authentication required");
+    expect(insight.engineResultSubtype).toBe("error_during_execution");
+    expect(insight.engineErrorMessage).toBe("API error: 529 overloaded");
   });
 
   it("treats non-JSON stdout as a diagnostic", () => {

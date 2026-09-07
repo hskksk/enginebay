@@ -105,19 +105,24 @@ describe("parseOpencodeLine", () => {
     ).toEqual([{ kind: "tokens", input: 10, output: 20, total: 30 }]);
   });
 
-  it("captures session IDs and error events on insight", () => {
-    const insight: { sessionId?: string; engineErrorMessage?: string } = {};
+  it("captures session IDs and OpenCode error.name / isRetryable", () => {
+    const insight: { sessionId?: string; engineErrorMessage?: string; engineErrorName?: string; engineRetryable?: boolean } = {};
     const events = parseOpencodeLine(
       JSON.stringify({
         type: "error",
         sessionID: "ses_9",
-        error: { data: { message: "provider overloaded" } },
+        error: {
+          name: "APIError",
+          data: { message: "provider overloaded", statusCode: 529, isRetryable: true },
+        },
       }),
       new Set(),
       insight,
     );
     expect(insight.sessionId).toBe("ses_9");
     expect(insight.engineErrorMessage).toBe("provider overloaded");
+    expect(insight.engineErrorName).toBe("APIError");
+    expect(insight.engineRetryable).toBe(true);
     expect(events).toContainEqual({
       kind: "diagnostic",
       stream: "stdout",

@@ -1,7 +1,6 @@
 import { redactSecrets, redactSecretsDeep } from "./redact.js";
 import {
-  captureEngineError,
-  captureSessionId,
+  captureEngineEvent,
   engineErrorFromRaw,
   type RunInsight,
 } from "./run-insight.js";
@@ -138,9 +137,8 @@ export function parseOpencodeLine(
 
   const events: BayEvent[] = [];
   const rec = asRecord(raw) ?? {};
-  captureSessionId(rec, insight);
+  captureEngineEvent(rec, insight);
   const engineError = engineErrorFromRaw(rec);
-  captureEngineError(engineError, insight);
   if (engineError) {
     events.push({ kind: "diagnostic", stream: "stdout", text: engineError });
   }

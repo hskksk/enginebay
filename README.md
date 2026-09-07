@@ -64,7 +64,15 @@ await bay.close();
 
 Each `run()` starts a **fresh CLI process**. Conversation continuity across successful turns is the consumer's job (a redrive prompt), not `--continue` inside the engine.
 
-If the CLI dies mid-turn with a **non-critical** error (rate limit, network reset, crash), `run()` restarts the process and resumes the captured engine session so that turn can finish. Auth failures, a missing binary, and `abort()` are **critical**: the stream yields `{ kind: "error", message, critical: true }` and `exit.error` with the cause. Set `recoveryAttempts: 0` on `openBay` to disable restart.
+If the CLI dies mid-turn with a **non-critical** error, `run()` restarts the process and resumes the captured engine session with a follow-up prompt (`Continue.`). That matches how the CLIs actually resume: a new process plus a new user turn on the persisted session, not a replay of a crashed generation.
+
+Classification uses each engine's own error shape first:
+
+- OpenCode: `error.name` / `error.data.isRetryable`
+- Claude Code: `result.subtype` (`error_during_execution` vs max-turns / budget)
+- Cursor Agent: non-zero exit + stderr (the stream often has no terminal `result` on failure)
+
+Auth failures, a missing binary, and `abort()` are **critical**. Set `recoveryAttempts: 0` on `openBay` to disable restart.
 
 ## Interactive CLI
 

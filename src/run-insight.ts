@@ -1,6 +1,12 @@
 export type RunInsight = {
   sessionId?: string;
   engineErrorMessage?: string;
+  /** OpenCode `error.name` (ProviderAuthError, APIError, …). */
+  engineErrorName?: string;
+  /** Claude/Cursor `result.subtype` (error_during_execution, …). */
+  engineResultSubtype?: string;
+  /** OpenCode `error.data.isRetryable` when the vendor set it. */
+  engineRetryable?: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -35,6 +41,15 @@ function messageFromUnknown(value: unknown): string | undefined {
     data?.message,
     typeof rec.name === "string" && rec.name.length > 0 ? rec.name : undefined,
   ]);
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
 }
 
 export function captureSessionId(
@@ -74,6 +89,79 @@ export function captureEngineError(
   }
 }
 
+function noteRetryable(value: unknown, insight: RunInsight): void {
+  if (insight.engineRetryable !== undefined) {
+    return;
+  }
+  if (typeof value === "boolean") {
+    insight.engineRetryable = value;
+  }
+}
+
+function noteErrorObject(
+  error: Record<string, unknown> | undefined,
+  insight: RunInsight,
+): void {
+  if (!error) {
+    return;
+  }
+  if (!insight.engineErrorName && typeof error.name === "string") {
+    insight.engineErrorName = error.name;
+  }
+  const data = asRecord(error.data);
+  noteRetryable(error.isRetryable, insight);
+  noteRetryable(data?.isRetryable, insight);
+  captureEngineError(messageFromUnknown(error) ?? messageFromUnknown(data), insight);
+}
+
+/**
+ * Record vendor session ids and structured process-error fields from one JSON event.
+ */
+export function captureEngineEvent(
+  raw: Record<string, unknown>,
+  insight?: RunInsight,
+): void {
+  captureSessionId(raw, insight);
+  if (!insight) {
+    return;
+  }
+
+  const type = raw.type;
+  const subtype = typeof raw.subtype === "string" ? raw.subtype : undefined;
+  const properties = asRecord(raw.properties);
+
+  if (
+    type === "error" ||
+    type === "session.error" ||
+    type === "server.error"
+  ) {
+    noteErrorObject(asRecord(raw.error) ?? asRecord(properties?.error), insight);
+    captureEngineError(messageFromUnknown(raw), insight);
+    return;
+  }
+
+  if (type !== "result") {
+    return;
+  }
+  if (subtype && !insight.engineResultSubtype) {
+    insight.engineResultSubtype = subtype;
+  }
+  const isError =
+    raw.is_error === true ||
+    (subtype !== undefined && /^error/i.test(subtype));
+  if (!isError) {
+    return;
+  }
+  const listed = stringList(raw.errors);
+  captureEngineError(
+    messageFromUnknown(raw.result) ??
+      (listed.length > 0 ? listed.join("; ") : undefined) ??
+      messageFromUnknown(raw.error) ??
+      subtype,
+    insight,
+  );
+}
+
 /**
  * Pull a process-level error string from a vendor JSON event.
  * Tool-result failures are not process errors.
@@ -81,24 +169,7 @@ export function captureEngineError(
 export function engineErrorFromRaw(
   raw: Record<string, unknown>,
 ): string | undefined {
-  const type = raw.type;
-  const subtype = typeof raw.subtype === "string" ? raw.subtype : "";
-  const resultIsError =
-    type === "result" &&
-    (raw.is_error === true || /^error/i.test(subtype));
-  const typedError =
-    type === "error" ||
-    type === "session.error" ||
-    type === "server.error";
-  if (!resultIsError && !typedError) {
-    return undefined;
-  }
-  const properties = asRecord(raw.properties);
-  return (
-    messageFromUnknown(raw.result) ??
-    messageFromUnknown(raw.error) ??
-    messageFromUnknown(properties?.error) ??
-    messageFromUnknown(raw.message) ??
-    (subtype.length > 0 ? subtype : undefined)
-  );
+  const insight: RunInsight = {};
+  captureEngineEvent(raw, insight);
+  return insight.engineErrorMessage;
 }
