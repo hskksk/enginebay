@@ -42,29 +42,29 @@ const CLAUDE_CRITICAL_SUBTYPES = new Set([
   "error_max_structured_output_retries",
 ]);
 
+/**
+ * Anything not matched here is treated as recoverable: a crash, a rate limit,
+ * and an unknown non-zero exit are all worth one more process start.
+ */
 const CRITICAL_PATTERNS: RegExp[] = [
-  /\b(unauthoriz|authentication|not logged in|login required|invalid api key|api[_ ]?key(?: is)?(?: invalid| missing)|missing api key)\b/i,
-  /\b(billing|payment required|credit(?:s)? (?:exceeded|exhausted|limit)|insufficient[_\s]quota)\b/i,
-  /\b(unknown model|invalid model|model .+ not found)\b/i,
-  /\b(error_max_turns|error_max_budget_usd|error_max_structured_output_retries)\b/i,
-  /\b(enoent|not on path|command not found|could not launch)\b/i,
+  /unauthoriz/i,
+  /\bforbidden\b/i,
+  /\b(?:401|403)\b/,
+  /\bauthentication\b/i,
+  /\bnot logged in\b/i,
+  /\blogin required\b/i,
+  /\b(?:run|use)\s+\W*\w+ login\b/i,
+  /\binvalid[_ ]api[_ ]key\b/i,
+  /\bmissing api key\b/i,
+  /\bapi[_ ]?key\b[^.\n]{0,40}\b(?:invalid|missing|not valid|expired|revoked)\b/i,
+  /\btoken\b[^.\n]{0,40}\b(?:expired|revoked)\b/i,
+  /\b(?:billing|payment required)\b/i,
+  /\bcredit(?:s)? (?:exceeded|exhausted|limit)\b/i,
+  /\b(?:insufficient[_\s]quota|quota exceeded)\b/i,
+  /\b(?:unknown model|invalid model|model .+ not found)\b/i,
+  /\b(?:error_max_turns|error_max_budget_usd|error_max_structured_output_retries)\b/i,
+  /\b(?:enoent|not on path|command not found|could not launch)\b/i,
 ];
-
-const RECOVERABLE_PATTERNS: RegExp[] = [
-  /\b(rate limit|too many requests|overloaded|try again|temporarily unavailable)\b/i,
-  /\b(econnreset|etimedout|enotfound|eai_again|socket hang up|fetch failed|network)\b/i,
-  /\b(429|529|503|504)\b/,
-  /\btimeout\b/i,
-];
-
-const CRASH_SIGNALS = new Set<string>([
-  "SIGKILL",
-  "SIGSEGV",
-  "SIGABRT",
-  "SIGBUS",
-  "SIGILL",
-  "SIGFPE",
-]);
 
 export function clipErrorText(text: string, max = MAX_ERROR_CHARS): string {
   const trimmed = text.trim();
@@ -76,10 +76,6 @@ export function clipErrorText(text: string, max = MAX_ERROR_CHARS): string {
 
 export function isCriticalErrorMessage(message: string): boolean {
   return CRITICAL_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-function isRecoverableErrorMessage(message: string): boolean {
-  return RECOVERABLE_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 export type ProcessFailureInput = {
@@ -105,7 +101,8 @@ function failureMessage(input: ProcessFailureInput): string {
   }
   if (spawnError) {
     parts.push(spawnError);
-  } else if (stderr && stderr !== engineError) {
+  }
+  if (stderr && stderr !== engineError && stderr !== spawnError) {
     parts.push(stderr);
   }
   if (signal) {
@@ -158,12 +155,6 @@ export function classifyProcessFailure(input: ProcessFailureInput): BayError {
 
   if (isCriticalErrorMessage(haystack)) {
     return { message, critical: true };
-  }
-  if (input.signal && CRASH_SIGNALS.has(input.signal)) {
-    return { message, critical: false };
-  }
-  if (isRecoverableErrorMessage(haystack)) {
-    return { message, critical: false };
   }
   return { message, critical: false };
 }

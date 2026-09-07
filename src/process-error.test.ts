@@ -142,7 +142,7 @@ describe("classifyProcessFailure", () => {
     ).toBe(true);
   });
 
-  it("treats rate limits, network errors, and crashes as recoverable", () => {
+  it("treats an unmatched failure as recoverable, including crash signals", () => {
     expect(
       classifyProcessFailure({
         code: 1,
@@ -196,6 +196,41 @@ describe("isCriticalErrorMessage", () => {
   it("detects missing-CLI wording without relying on Claude subtypes", () => {
     expect(isCriticalErrorMessage("command not found")).toBe(true);
     expect(isCriticalErrorMessage("socket hang up")).toBe(false);
+  });
+
+  it("detects the wordings the CLIs actually print for a bad credential", () => {
+    for (const message of [
+      "Unauthorized",
+      "401 Unauthorized",
+      "HTTP 403 Forbidden",
+      "Authentication required",
+      "not logged in",
+      "Please run `claude login`",
+      "invalid api key",
+      "invalid_api_key",
+      "API key not valid",
+      "OAuth token expired",
+      "token revoked",
+      "quota exceeded",
+      "insufficient_quota",
+      "payment required",
+    ]) {
+      expect(isCriticalErrorMessage(message), message).toBe(true);
+    }
+  });
+
+  it("leaves transient failures recoverable", () => {
+    for (const message of [
+      "rate limit exceeded (429)",
+      "529 overloaded, try again",
+      "ECONNRESET: connection reset",
+      "socket hang up",
+      "fetch failed",
+      "request timeout",
+      "503 service unavailable",
+    ]) {
+      expect(isCriticalErrorMessage(message), message).toBe(false);
+    }
   });
 });
 
