@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { iterateRecoverableRun, BayProcessControl } from "./bay-run.js";
+import { BayProcessControl, startBayRun } from "./bay-run.js";
 import { commandExists, readCommandVersion } from "./command.js";
 import {
   buildChildEnv,
@@ -126,16 +126,10 @@ class OpencodeBay implements Bay {
     await Promise.all(jobs);
   }
 
-  async *run(prompt: string): AsyncIterable<BayEvent> {
-    if (this.control.closed) {
-      throw new Error("enginebay: bay is closed");
-    }
-    const { isStopped, setRunning } = await this.control.beginRun();
-    yield* iterateRecoverableRun({
+  run(prompt: string): AsyncIterable<BayEvent> {
+    return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
-      isStopped,
-      setRunning,
       resetParser: () => {
         this.seenToolCalls.clear();
       },

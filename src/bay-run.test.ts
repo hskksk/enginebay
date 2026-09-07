@@ -54,6 +54,10 @@ function hangingRun(state: { killed: boolean }): SpawnedRun {
             });
             return { value: undefined, done: true };
           },
+          async return() {
+            end({ code: 1, stderr: "", signal: "SIGTERM" });
+            return { value: undefined, done: true };
+          },
         };
       },
     },
@@ -163,7 +167,16 @@ describe("BayProcessControl", () => {
       parseLine: () => [],
       spawn: () => hangingRun(firstState),
     })[Symbol.asyncIterator]();
-    void firstIter.next();
+    const firstEventsPromise = (async () => {
+      const events: BayEvent[] = [];
+      for (;;) {
+        const step = await firstIter.next();
+        if (step.done) {
+          return events;
+        }
+        events.push(step.value);
+      }
+    })();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     const second = await control.beginRun();
@@ -177,17 +190,19 @@ describe("BayProcessControl", () => {
       parseLine: () => [],
       spawn: () => hangingRun(secondState),
     })[Symbol.asyncIterator]();
-    void secondIter.next();
+    const secondEventsPromise = (async () => {
+      const events: BayEvent[] = [];
+      for (;;) {
+        const step = await secondIter.next();
+        if (step.done) {
+          return events;
+        }
+        events.push(step.value);
+      }
+    })();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const firstEvents: BayEvent[] = [];
-    for (;;) {
-      const step = await firstIter.next();
-      if (step.done) {
-        break;
-      }
-      firstEvents.push(step.value);
-    }
+    const firstEvents = await firstEventsPromise;
     expect(firstEvents.find((event) => event.kind === "error")).toMatchObject({
       kind: "error",
       critical: true,
@@ -196,5 +211,6 @@ describe("BayProcessControl", () => {
 
     await control.abort();
     expect(secondState.killed).toBe(true);
+    await secondEventsPromise;
   });
 });

@@ -42,16 +42,7 @@ export class BayProcessControl {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-export async function* iterateRecoverableRun(input: {
+type RecoverableRunInput = {
   spawn: (resumeSessionId: string | undefined) => SpawnedRun;
   parseLine: (line: string, insight: RunInsight) => BayEvent[];
   resetParser?: () => void;
@@ -59,7 +50,111 @@ export async function* iterateRecoverableRun(input: {
   isStopped: () => boolean;
   recoveryAttempts?: number;
   recoveryBackoffMs?: number;
-}): AsyncIterable<BayEvent> {
+};
+
+export function startBayRun(
+  control: BayProcessControl,
+  input: Omit<RecoverableRunInput, "isStopped" | "setRunning">,
+): AsyncIterable<BayEvent> {
+  let started: Promise<AsyncIterator<BayEvent>> | undefined;
+  const getInner = (): Promise<AsyncIterator<BayEvent>> => {
+    started ??= (async () => {
+      if (control.closed) {
+        throw new Error("enginebay: bay is closed");
+      }
+      const { isStopped, setRunning } = await control.beginRun();
+      return iterateRecoverableRun({
+        ...input,
+        isStopped,
+        setRunning,
+      })[Symbol.asyncIterator]();
+    })();
+    return started;
+  };
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<BayEvent> {
+      return {
+        async next() {
+          return (await getInner()).next();
+        },
+        async return() {
+          const inner = await getInner();
+          return inner.return
+            ? inner.return(undefined)
+            : { done: true, value: undefined };
+        },
+        async throw(error) {
+          const inner = await getInner();
+          return inner.throw
+            ? inner.throw(error)
+            : Promise.reject(error);
+        },
+      };
+    },
+  };
+}
+
+/**
+ * `return()` / `break` cannot interrupt a pending `for await`. Kill the child
+ * first so stdout ends and the inner generator can finish.
+ */
+export function iterateRecoverableRun(
+  input: RecoverableRunInput,
+): AsyncIterable<BayEvent> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<BayEvent> {
+      let current: SpawnedRun | undefined;
+      let cancelled = false;
+      let wakeSleep: (() => void) | undefined;
+      const inner = recoverLoop({
+        ...input,
+        isStopped: () => cancelled || input.isStopped(),
+        setRunning: (run) => {
+          current = run;
+          input.setRunning(run);
+        },
+        sleep: (ms) => {
+          if (ms <= 0) {
+            return Promise.resolve();
+          }
+          return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+              wakeSleep = undefined;
+              resolve();
+            }, ms);
+            wakeSleep = () => {
+              clearTimeout(timer);
+              wakeSleep = undefined;
+              resolve();
+            };
+          });
+        },
+      })[Symbol.asyncIterator]();
+
+      const stop = async (): Promise<void> => {
+        cancelled = true;
+        wakeSleep?.();
+        await current?.kill("SIGTERM");
+      };
+
+      return {
+        next: () => inner.next(),
+        async return() {
+          await stop();
+          return inner.return(undefined);
+        },
+        async throw(error) {
+          await stop();
+          return inner.throw(error);
+        },
+      };
+    },
+  };
+}
+
+async function* recoverLoop(
+  input: RecoverableRunInput & { sleep: (ms: number) => Promise<void> },
+): AsyncGenerator<BayEvent> {
   const extra = resolveRecoveryAttempts(input.recoveryAttempts);
   const maxAttempts = 1 + extra;
   const backoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
@@ -137,7 +232,7 @@ export async function* iterateRecoverableRun(input: {
             sessionId,
           }),
         });
-        await sleep(backoffMs * attempt);
+        await input.sleep(backoffMs * attempt);
         if (input.isStopped()) {
           lastError = classifyProcessFailure({
             code: lastCode,

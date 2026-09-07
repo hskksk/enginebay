@@ -108,6 +108,10 @@ export function spawnLineProcess(options: {
             });
           }
         },
+        async return() {
+          endStdout();
+          return { value: undefined, done: true };
+        },
       };
     },
   };
