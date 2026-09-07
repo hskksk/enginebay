@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { processLineChunk } from "./lines.js";
 
+/** Grace period before a SIGTERM is escalated to SIGKILL. */
+const KILL_GRACE_MS = 2000;
+/** Hard cap so kill() always settles even if the child never reports close. */
+const KILL_DEADLINE_MS = 5000;
+
 export type SpawnWaitResult = {
   code: number;
   stderr: string;
@@ -140,9 +145,28 @@ export function spawnLineProcess(options: {
       return;
     }
     await new Promise<void>((resolve) => {
-      child.once("close", () => resolve());
-      child.once("error", () => resolve());
+      const timers: NodeJS.Timeout[] = [];
+      const done = (): void => {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+        child.off("close", done);
+        child.off("error", done);
+        resolve();
+      };
+      const later = (ms: number, run: () => void): void => {
+        const timer = setTimeout(run, ms);
+        timer.unref();
+        timers.push(timer);
+      };
+      child.once("close", done);
+      child.once("error", done);
       child.kill(signal);
+      if (signal !== "SIGKILL") {
+        // A CLI that traps SIGTERM must not wedge abort() / close() forever.
+        later(KILL_GRACE_MS, () => child.kill("SIGKILL"));
+      }
+      later(KILL_DEADLINE_MS, done);
     });
   }
 
