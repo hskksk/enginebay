@@ -50,7 +50,6 @@ class CursorBay implements Bay {
   private readonly recoveryAttempts: number;
   private readonly recoveryBackoffMs: number;
   private readonly control = new BayProcessControl();
-  private readonly toolById = new Map<string, string>();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -112,11 +111,10 @@ class CursorBay implements Bay {
     return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
-      resetParser: () => {
-        this.toolById.clear();
+      createParser: () => {
+        const toolById = new Map<string, string>();
+        return (line, insight) => parseCursorLine(line, toolById, insight);
       },
-      parseLine: (line, insight) =>
-        parseCursorLine(line, this.toolById, insight),
       spawn: (resumeSessionId) =>
         spawnLineProcess({
           command: this.command,

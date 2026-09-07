@@ -385,6 +385,10 @@ Resume is a **follow-up turn** on the persisted session, which is how all three 
 
 Resume happens only when the failed process had already emitted a session id. Without one, a restart would re-send the original prompt and can duplicate tool calls or edits, so `run()` fails instead of retrying.
 
+Each restart resumes the **newest** id seen so far. Claude Code and Cursor Agent mint a new session id for the resumed conversation, so a third process start that reused the original id would drop the second attempt's work.
+
+A CLI that exits 0 is never resumed, even when the stream carried an error event: a clean exit means the process is not what failed, so restarting cannot help and resuming would repeat a turn the CLI considered finished. A terminal `result` marked `is_error` still counts as a failure, because that is how Claude reports one.
+
 Session storage that makes in-bay resume possible:
 
 | Engine | Session location | Resume flag |
@@ -402,9 +406,18 @@ How a failed process is classified (vendor fields first, message fallbacks secon
 | Cursor Agent | documented failure path is **non-zero exit + stderr**, often **no terminal `result`** | auth / missing CLI in stderr | socket hang up, crash, unknown non-zero with no auth text |
 | All | spawn / abort | `ENOENT`, `abort()` | `SIGKILL` / `SIGSEGV` and similar crashes |
 
+Message matching has exactly one rule: a failure is critical when it matches a credential, billing, unknown-model, budget, or missing-binary pattern. Everything else — rate limits, network resets, crash signals, an unknown non-zero exit — is recoverable. Credential wording covers what the CLIs actually print (`Unauthorized`, `401` / `403`, `not logged in`, `run <cli> login`, an invalid or expired key or token, `quota exceeded`).
+
 A successful first `run()` still starts a new process and does not pass `--continue` / `--resume`. Set `recoveryAttempts: 0` to disable restart. `recoveryAttempts` must be a non-negative integer; invalid values throw. `recoveryBackoffMs` (default 250) delays each resume restart, multiplied by the attempt number; `0` retries immediately.
 
-Cancelling the `run()` iterator (`break`, `.return()`, or a thrown consumer error) SIGTERMs the child. A later `run()` on the same bay invalidates the previous iterator so it cannot restart after that SIGTERM, and it cannot clear the new child via `setRunning(undefined)`.
+Cancelling the `run()` iterator (`break`, `.return()`, or a thrown consumer error) SIGTERMs the child. A later `run()` on the same bay invalidates the previous iterator so it cannot restart after that SIGTERM, and it cannot clear the new child via `setRunning(undefined)`. Closing an iterator that was never advanced does nothing — it must not start a run just to cancel it, since that would abort whatever is currently running.
+
+Process teardown rules the bay depends on:
+
+- `kill()` sends SIGTERM, escalates to SIGKILL after a grace period, and always settles. A CLI that traps SIGTERM must not wedge `abort()`, `close()`, or the next `run()`.
+- The bay keeps owning the child until its kill resolves, so an un-awaited `abort()` followed by `close()` still waits before deleting the isolation dirs.
+- A backoff wait is sliced, so `abort()` and `close()` take effect without waiting out `recoveryBackoffMs`.
+- Parser dedup state (seen tool calls, tool ids) is created per process start, so overlapping runs never share it.
 
 Consumers still own when to send the next prompt. Recovery only finishes the in-flight `run()`.
 

@@ -101,13 +101,34 @@ const hangFirst =
   Boolean(process.env.ENGINEBAY_FAKE_HANG) &&
   process.env.ENGINEBAY_FAKE_HANG.length > 0 &&
   spawnCount <= 1;
+function sessionLine(id) {
+  return JSON.stringify({
+    type: "system",
+    subtype: "init",
+    session_id: id,
+    sessionID: id,
+  });
+}
+
 if (hangFirst) {
+  if (process.env.ENGINEBAY_FAKE_IGNORE_SIGTERM === "1") {
+    process.on("SIGTERM", () => {
+      /* only SIGKILL can stop this one */
+    });
+  }
+  const sigtermDelayMs = Number(process.env.ENGINEBAY_FAKE_SIGTERM_DELAY_MS ?? "0");
+  if (Number.isFinite(sigtermDelayMs) && sigtermDelayMs > 0) {
+    process.on("SIGTERM", () => {
+      setTimeout(() => process.exit(0), sigtermDelayMs);
+    });
+  }
+  setInterval(() => {
+    /* keep the event loop alive until the signal lands */
+  }, 60_000);
+  // Written last: the pid file is what tells the test the handlers are ready.
   if (dumpDir) {
     writeFileSync(join(dumpDir, "pid"), `${process.pid}\n`);
   }
-  setInterval(() => {
-    /* keep the event loop alive until SIGTERM */
-  }, 60_000);
 } else {
   const argv = process.argv.slice(2);
   const isResume =
@@ -115,25 +136,35 @@ if (hangFirst) {
     argv.includes("--session") ||
     argv.includes("-s");
   const failUnlessResume = process.env.ENGINEBAY_FAKE_FAIL_UNLESS_RESUME;
-  if (failUnlessResume && failUnlessResume.length > 0 && !isResume) {
-    const skipSession =
-      process.env.ENGINEBAY_FAKE_NO_SESSION === "1" ||
-      process.env.ENGINEBAY_FAKE_SESSION_EVENT === "";
-    if (!skipSession) {
-      const sessionEvent =
-        process.env.ENGINEBAY_FAKE_SESSION_EVENT &&
-        process.env.ENGINEBAY_FAKE_SESSION_EVENT.length > 0
-          ? process.env.ENGINEBAY_FAKE_SESSION_EVENT
-          : JSON.stringify({
-              type: "system",
-              subtype: "init",
-              session_id: "sess-recover",
-              sessionID: "sess-recover",
-            });
-      process.stdout.write(
-        sessionEvent.endsWith("\n") ? sessionEvent : `${sessionEvent}\n`,
-      );
+  const failCount = Number(process.env.ENGINEBAY_FAKE_FAIL_COUNT ?? "0");
+  const failFirstN = Number.isFinite(failCount) ? failCount : 0;
+  const explicitSession = process.env.ENGINEBAY_FAKE_SESSION_EVENT;
+  const skipSession =
+    process.env.ENGINEBAY_FAKE_NO_SESSION === "1" || explicitSession === "";
+
+  let sessionEvent;
+  if (!skipSession) {
+    if (explicitSession && explicitSession.length > 0) {
+      sessionEvent = explicitSession;
+    } else if (failFirstN > 0) {
+      // A distinct id per process start, like a real resume does.
+      sessionEvent = sessionLine(`sess-${spawnCount}`);
+    } else if (failUnlessResume && failUnlessResume.length > 0) {
+      sessionEvent = sessionLine("sess-recover");
     }
+  }
+  if (sessionEvent) {
+    process.stdout.write(
+      sessionEvent.endsWith("\n") ? sessionEvent : `${sessionEvent}\n`,
+    );
+  }
+
+  if (failFirstN > 0 && spawnCount <= failFirstN) {
+    process.stderr.write("ECONNRESET: connection reset\n");
+    process.exit(1);
+  }
+
+  if (failUnlessResume && failUnlessResume.length > 0 && !isResume) {
     process.stderr.write(
       failUnlessResume.endsWith("\n")
         ? failUnlessResume

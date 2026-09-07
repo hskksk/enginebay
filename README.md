@@ -72,7 +72,9 @@ Classification uses each engine's own error shape first:
 - Claude Code: `result.subtype` (`error_during_execution` vs max-turns / budget)
 - Cursor Agent: non-zero exit + stderr (the stream often has no terminal `result` on failure)
 
-Auth failures, a missing binary, and `abort()` are **critical**. Set `recoveryAttempts: 0` on `openBay` to disable restart. `recoveryAttempts` must be a non-negative integer. `recoveryBackoffMs` (default 250) delays each resume, multiplied by the attempt number. Cancelling the `run()` iterator kills the child.
+Auth failures, a missing binary, and `abort()` are **critical**; everything else is worth one more process start. A CLI that exits 0 is never resumed, even if the stream carried an error event.
+
+Set `recoveryAttempts: 0` on `openBay` to disable restart; it must be a non-negative integer. `recoveryBackoffMs` (default 250) delays each resume, multiplied by the attempt number. Cancelling the `run()` iterator kills the child, escalating to SIGKILL if the CLI ignores SIGTERM.
 
 ## Interactive CLI
 

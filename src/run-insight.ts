@@ -5,6 +5,11 @@ export type RunInsight = {
   engineErrorName?: string;
   /** Claude/Cursor `result.subtype` (error_during_execution, …). */
   engineResultSubtype?: string;
+  /**
+   * The engine's terminal event said the turn failed. Mid-stream error events
+   * do not set this: an engine that recovers and exits 0 must not be resumed.
+   */
+  engineTerminalError?: boolean;
   /** OpenCode `error.data.isRetryable` when the vendor set it. */
   engineRetryable?: boolean;
 };
@@ -152,6 +157,7 @@ export function captureEngineEvent(
   if (!isError) {
     return;
   }
+  insight.engineTerminalError = true;
   const listed = stringList(raw.errors);
   captureEngineError(
     messageFromUnknown(raw.result) ??

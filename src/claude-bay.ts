@@ -47,7 +47,6 @@ class ClaudeBay implements Bay {
   private readonly recoveryAttempts: number;
   private readonly recoveryBackoffMs: number;
   private readonly control = new BayProcessControl();
-  private readonly toolById = new Map<string, string>();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -107,11 +106,10 @@ class ClaudeBay implements Bay {
     return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
-      resetParser: () => {
-        this.toolById.clear();
+      createParser: () => {
+        const toolById = new Map<string, string>();
+        return (line, insight) => parseClaudeLine(line, toolById, insight);
       },
-      parseLine: (line, insight) =>
-        parseClaudeLine(line, this.toolById, insight),
       spawn: (resumeSessionId) =>
         spawnLineProcess({
           command: CLAUDE_COMMAND,

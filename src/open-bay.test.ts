@@ -57,7 +57,7 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-async function waitUntilDead(pid: number, timeoutMs = 5000): Promise<void> {
+async function waitUntilDead(pid: number, timeoutMs = 8000): Promise<void> {
   const started = Date.now();
   while (pidAlive(pid)) {
     if (Date.now() - started > timeoutMs) {
@@ -542,7 +542,7 @@ describe("openBay process error recovery", () => {
     await waitForFile(join(dumpDir, "pid"));
     const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
     expect(pidAlive(pid)).toBe(true);
-    await iter.return();
+    await iter.return?.();
     await pending.catch(() => undefined);
     await waitUntilDead(pid);
     expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
@@ -600,6 +600,235 @@ describe("openBay process error recovery", () => {
       message: "enginebay: run aborted",
     });
     expect(existsSync(join(dumpDir, "argv-3.json"))).toBe(false);
+    await bay.close();
+  });
+
+  it("resumes the newest session id on the second retry", async () => {
+    const hostHome = await tempDir("enginebay-chain-host-");
+    const workDir = await tempDir("enginebay-chain-work-");
+    const binDir = await tempDir("enginebay-chain-bin-");
+    const dumpDir = await tempDir("enginebay-chain-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_COUNT: "2",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+
+    const argvFor = async (spawn: number) =>
+      JSON.parse(
+        await readFile(join(dumpDir, `argv-${spawn}.json`), "utf8"),
+      ) as string[];
+    const second = await argvFor(2);
+    const third = await argvFor(3);
+    expect(second[second.indexOf("--session") + 1]).toBe("sess-1");
+    expect(third[third.indexOf("--session") + 1]).toBe("sess-2");
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+  });
+
+  it("does not restart a critical failure that reported a session id", async () => {
+    const hostHome = await tempDir("enginebay-critsess-host-");
+    const workDir = await tempDir("enginebay-critsess-work-");
+    const binDir = await tempDir("enginebay-critsess-bin-");
+    const dumpDir = await tempDir("enginebay-critsess-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_auth",
+        }),
+        ENGINEBAY_FAKE_STDERR: "401 Unauthorized\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.find((event) => event.kind === "error")).toMatchObject({
+      kind: "error",
+      critical: true,
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("reports an engine error on a clean exit without restarting", async () => {
+    const hostHome = await tempDir("enginebay-cleanerr-host-");
+    const workDir = await tempDir("enginebay-cleanerr-work-");
+    const binDir = await tempDir("enginebay-cleanerr-bin-");
+    const dumpDir = await tempDir("enginebay-cleanerr-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_clean",
+        }),
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "error",
+          error: {
+            name: "APIError",
+            message: "overloaded",
+            data: { isRetryable: true },
+          },
+        }),
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.find((event) => event.kind === "error")).toMatchObject({
+      kind: "error",
+      critical: false,
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("escalates to SIGKILL when the CLI ignores SIGTERM", async () => {
+    const hostHome = await tempDir("enginebay-sigkill-host-");
+    const workDir = await tempDir("enginebay-sigkill-work-");
+    const binDir = await tempDir("enginebay-sigkill-bin-");
+    const dumpDir = await tempDir("enginebay-sigkill-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+        ENGINEBAY_FAKE_IGNORE_SIGTERM: "1",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const iter = bay.run("go")[Symbol.asyncIterator]();
+    const pending = iter.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+    await iter.return?.();
+    await pending.catch(() => undefined);
+    await waitUntilDead(pid, 10_000);
+    await bay.close();
+  }, 20_000);
+
+  it("waits for an un-awaited abort before close deletes the isolation dirs", async () => {
+    const hostHome = await tempDir("enginebay-teardown-host-");
+    const workDir = await tempDir("enginebay-teardown-work-");
+    const binDir = await tempDir("enginebay-teardown-bin-");
+    const dumpDir = await tempDir("enginebay-teardown-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+        ENGINEBAY_FAKE_SIGTERM_DELAY_MS: "400",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const iter = bay.run("go")[Symbol.asyncIterator]();
+    const pending = iter.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+
+    void bay.abort();
+    await bay.close();
+    expect(pidAlive(pid)).toBe(false);
+    await pending.catch(() => undefined);
+    await iter.return?.();
+  });
+
+  it("closing an iterator that never ran does not abort the live run", async () => {
+    const hostHome = await tempDir("enginebay-unused-host-");
+    const workDir = await tempDir("enginebay-unused-work-");
+    const binDir = await tempDir("enginebay-unused-bin-");
+    const dumpDir = await tempDir("enginebay-unused-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const live = bay.run("live")[Symbol.asyncIterator]();
+    const pending = live.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+
+    const unused = bay.run("unused")[Symbol.asyncIterator]();
+    await unused.return?.();
+
+    expect(pidAlive(pid)).toBe(true);
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+
+    await live.return?.();
+    await pending.catch(() => undefined);
     await bay.close();
   });
 });

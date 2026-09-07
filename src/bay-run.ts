@@ -9,16 +9,25 @@ import type { RunInsight } from "./run-insight.js";
 import type { SpawnedRun } from "./spawn.js";
 import type { BayError, BayEvent } from "./types.js";
 
+/** Slice length for a backoff wait, so abort() takes effect without waiting it out. */
+const BACKOFF_SLICE_MS = 50;
+
+type RunningChild = {
+  seq: number;
+  child: SpawnedRun;
+  stopped?: Promise<void>;
+};
+
 export class BayProcessControl {
   private seq = 0;
-  private running: { seq: number; child: SpawnedRun } | undefined;
+  private running: RunningChild | undefined;
+  /** The most recent kill, so a later caller can wait for a child it no longer owns. */
+  private settled: Promise<void> = Promise.resolve();
   closed = false;
 
-  async abort(): Promise<void> {
+  abort(): Promise<void> {
     this.seq += 1;
-    const current = this.running;
-    this.running = undefined;
-    await current?.child.kill("SIGTERM");
+    return this.stopRunning();
   }
 
   async beginRun(): Promise<{
@@ -26,9 +35,7 @@ export class BayProcessControl {
     setRunning: (run: SpawnedRun | undefined) => void;
   }> {
     const seq = ++this.seq;
-    const previous = this.running;
-    this.running = undefined;
-    await previous?.child.kill("SIGTERM");
+    await this.stopRunning();
     return {
       isStopped: () => this.closed || this.seq !== seq,
       setRunning: (run) => {
@@ -40,12 +47,35 @@ export class BayProcessControl {
       },
     };
   }
+
+  /**
+   * Kill the current child and wait for it to be gone. `running` stays set
+   * until the kill resolves, so an un-awaited abort() cannot make close()
+   * delete the isolation dirs while the CLI is still alive.
+   */
+  private stopRunning(): Promise<void> {
+    const current = this.running;
+    if (!current) {
+      return this.settled;
+    }
+    current.stopped ??= (async () => {
+      try {
+        await current.child.kill("SIGTERM");
+      } finally {
+        if (this.running === current) {
+          this.running = undefined;
+        }
+      }
+    })();
+    this.settled = current.stopped;
+    return this.settled;
+  }
 }
 
 type RecoverableRunInput = {
   spawn: (resumeSessionId: string | undefined) => SpawnedRun;
-  parseLine: (line: string, insight: RunInsight) => BayEvent[];
-  resetParser?: () => void;
+  /** Fresh parser state per process start; runs must not share dedup maps. */
+  createParser: () => (line: string, insight: RunInsight) => BayEvent[];
   setRunning: (run: SpawnedRun | undefined) => void;
   isStopped: () => boolean;
   recoveryAttempts?: number;
@@ -56,38 +86,45 @@ export function startBayRun(
   control: BayProcessControl,
   input: Omit<RecoverableRunInput, "isStopped" | "setRunning">,
 ): AsyncIterable<BayEvent> {
-  let started: Promise<AsyncIterator<BayEvent>> | undefined;
-  const getInner = (): Promise<AsyncIterator<BayEvent>> => {
-    started ??= (async () => {
+  let inner: Promise<AsyncIterator<BayEvent>> | undefined;
+  const start = (): Promise<AsyncIterator<BayEvent>> => {
+    inner ??= (async () => {
       if (control.closed) {
         throw new Error("enginebay: bay is closed");
       }
       const { isStopped, setRunning } = await control.beginRun();
-      return iterateRecoverableRun({
-        ...input,
-        isStopped,
-        setRunning,
-      })[Symbol.asyncIterator]();
+      return iterateRecoverableRun({ ...input, isStopped, setRunning })[
+        Symbol.asyncIterator
+      ]();
     })();
-    return started;
+    return inner;
   };
   return {
     [Symbol.asyncIterator](): AsyncIterator<BayEvent> {
       return {
         async next() {
-          return (await getInner()).next();
+          return (await start()).next();
         },
         async return() {
-          const inner = await getInner();
-          return inner.return
-            ? inner.return(undefined)
+          if (!inner) {
+            // Closing an iterator nobody advanced must not start (and then
+            // immediately abort) a run.
+            return { done: true, value: undefined };
+          }
+          const iterator = await inner;
+          return iterator.return
+            ? iterator.return(undefined)
             : { done: true, value: undefined };
         },
         async throw(error) {
-          const inner = await getInner();
-          return inner.throw
-            ? inner.throw(error)
-            : Promise.reject(error);
+          if (!inner) {
+            throw error;
+          }
+          const iterator = await inner;
+          if (!iterator.throw) {
+            throw error;
+          }
+          return iterator.throw(error);
         },
       };
     },
@@ -105,35 +142,36 @@ export function iterateRecoverableRun(
     [Symbol.asyncIterator](): AsyncIterator<BayEvent> {
       let current: SpawnedRun | undefined;
       let cancelled = false;
-      let wakeSleep: (() => void) | undefined;
+      let wakeBackoff: (() => void) | undefined;
+      const stopped = (): boolean => cancelled || input.isStopped();
       const inner = recoverLoop({
         ...input,
-        isStopped: () => cancelled || input.isStopped(),
+        isStopped: stopped,
         setRunning: (run) => {
           current = run;
           input.setRunning(run);
         },
-        sleep: (ms) => {
-          if (ms <= 0) {
-            return Promise.resolve();
+        backoff: async (ms) => {
+          const deadline = Date.now() + ms;
+          for (let left = ms; left > 0; left = deadline - Date.now()) {
+            if (stopped()) {
+              return;
+            }
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, Math.min(BACKOFF_SLICE_MS, left));
+              wakeBackoff = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+            });
+            wakeBackoff = undefined;
           }
-          return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-              wakeSleep = undefined;
-              resolve();
-            }, ms);
-            wakeSleep = () => {
-              clearTimeout(timer);
-              wakeSleep = undefined;
-              resolve();
-            };
-          });
         },
       })[Symbol.asyncIterator]();
 
       const stop = async (): Promise<void> => {
         cancelled = true;
-        wakeSleep?.();
+        wakeBackoff?.();
         await current?.kill("SIGTERM");
       };
 
@@ -153,10 +191,9 @@ export function iterateRecoverableRun(
 }
 
 async function* recoverLoop(
-  input: RecoverableRunInput & { sleep: (ms: number) => Promise<void> },
+  input: RecoverableRunInput & { backoff: (ms: number) => Promise<void> },
 ): AsyncGenerator<BayEvent> {
-  const extra = resolveRecoveryAttempts(input.recoveryAttempts);
-  const maxAttempts = 1 + extra;
+  const maxAttempts = 1 + resolveRecoveryAttempts(input.recoveryAttempts);
   const backoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   let sessionId: string | undefined;
   let lastError: BayError | undefined;
@@ -171,21 +208,20 @@ async function* recoverLoop(
       });
       break;
     }
-    input.resetParser?.();
-    const resumeSessionId = attempt > 1 ? sessionId : undefined;
-    const spawned = input.spawn(resumeSessionId);
+    const parseLine = input.createParser();
+    const spawned = input.spawn(attempt > 1 ? sessionId : undefined);
     input.setRunning(spawned);
-    const insight: RunInsight = { sessionId };
+    const insight: RunInsight = {};
     try {
       for await (const line of spawned.stdout) {
-        for (const event of input.parseLine(line, insight)) {
+        for (const event of parseLine(line, insight)) {
           yield redactBayEvent(event);
         }
       }
       const finished = await spawned.wait();
-      if (insight.sessionId) {
-        sessionId = insight.sessionId;
-      }
+      // Resuming mints a new session id on Claude and Cursor, so the newest id
+      // is the one that has the previous attempt's work.
+      sessionId = insight.sessionId ?? sessionId;
       const stderr = finished.stderr.trim();
       if (stderr.length > 0) {
         yield redactBayEvent({
@@ -196,12 +232,9 @@ async function* recoverLoop(
       }
       lastCode = finished.code;
       const stopped = input.isStopped();
-      const success =
-        finished.code === 0 &&
-        !insight.engineErrorMessage &&
-        !finished.spawnError &&
-        !stopped;
-      if (success) {
+      const processFailed = finished.code !== 0 || Boolean(finished.spawnError);
+      const engineFailed = Boolean(insight.engineErrorMessage);
+      if (!processFailed && !engineFailed && !stopped) {
         yield { kind: "exit", code: 0 };
         return;
       }
@@ -220,7 +253,10 @@ async function* recoverLoop(
         !lastError.critical &&
         attempt < maxAttempts &&
         !stopped &&
-        Boolean(sessionId);
+        Boolean(sessionId) &&
+        // A clean exit means the process is not what failed, so restarting it
+        // cannot help and resuming would repeat a turn the CLI finished.
+        (processFailed || insight.engineTerminalError === true);
       if (canRetry) {
         yield redactBayEvent({
           kind: "diagnostic",
@@ -232,7 +268,7 @@ async function* recoverLoop(
             sessionId,
           }),
         });
-        await input.sleep(backoffMs * attempt);
+        await input.backoff(backoffMs * attempt);
         if (input.isStopped()) {
           lastError = classifyProcessFailure({
             code: lastCode,

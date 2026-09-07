@@ -65,7 +65,6 @@ class OpencodeBay implements Bay {
   private readonly recoveryAttempts: number;
   private readonly recoveryBackoffMs: number;
   private readonly control = new BayProcessControl();
-  private readonly seenToolCalls = new Set<string>();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -130,11 +129,11 @@ class OpencodeBay implements Bay {
     return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
-      resetParser: () => {
-        this.seenToolCalls.clear();
+      createParser: () => {
+        const seenToolCalls = new Set<string>();
+        return (line, insight) =>
+          parseOpencodeLine(line, seenToolCalls, insight);
       },
-      parseLine: (line, insight) =>
-        parseOpencodeLine(line, this.seenToolCalls, insight),
       spawn: (resumeSessionId) =>
         spawnLineProcess({
           command: OPENCODE_COMMAND,
