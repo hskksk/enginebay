@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BayProcessControl, startBayRun } from "./bay-run.js";
 import {
   attachCursorAuth,
   buildCursorArgs,
@@ -16,8 +17,12 @@ import {
   buildChildEnv,
 } from "./env.js";
 import { writeIsolatedGitconfig } from "./gitconfig.js";
-import { redactBayEvent } from "./opencode-parse.js";
-import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
+import {
+  RECOVERY_CONTINUE_PROMPT,
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
+} from "./process-error.js";
+import { spawnLineProcess } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 
@@ -42,9 +47,9 @@ class CursorBay implements Bay {
   private committerName: string;
   private readonly instructions: string | undefined;
   private readonly gitconfigPath: string;
-  private running: SpawnedRun | undefined;
-  private closed = false;
-  private readonly toolById = new Map<string, string>();
+  private readonly recoveryAttempts: number;
+  private readonly recoveryBackoffMs: number;
+  private readonly control = new BayProcessControl();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -58,6 +63,8 @@ class CursorBay implements Bay {
     committerName: string;
     instructions: string | undefined;
     gitconfigPath: string;
+    recoveryAttempts?: number;
+    recoveryBackoffMs?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -71,6 +78,8 @@ class CursorBay implements Bay {
     this.committerName = input.committerName;
     this.instructions = input.instructions;
     this.gitconfigPath = input.gitconfigPath;
+    this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
+    this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
 
   async updateExtraEnv(
@@ -85,13 +94,12 @@ class CursorBay implements Bay {
   }
 
   async abort(): Promise<void> {
-    await this.running?.kill("SIGTERM");
-    this.running = undefined;
+    await this.control.abort();
   }
 
   async close(): Promise<void> {
-    await this.abort();
-    this.closed = true;
+    this.control.closed = true;
+    await this.control.abort();
     const jobs = [rm(this.runtimeDir, RM_OPTS)];
     if (this.workspace.ephemeral) {
       jobs.push(rm(this.workDir, RM_OPTS));
@@ -99,45 +107,28 @@ class CursorBay implements Bay {
     await Promise.all(jobs);
   }
 
-  async *run(prompt: string): AsyncIterable<BayEvent> {
-    if (this.closed) {
-      throw new Error("enginebay: bay is closed");
-    }
-    if (this.running) {
-      await this.abort();
-    }
-    this.toolById.clear();
-    const spawned = spawnLineProcess({
-      command: this.command,
-      args: buildCursorArgs({
-        prompt,
-        workDir: this.workDir,
-        model: this.model,
-        instructions: this.instructions,
-      }),
-      cwd: this.workDir,
-      env: this.childEnv(),
+  run(prompt: string): AsyncIterable<BayEvent> {
+    return startBayRun(this.control, {
+      recoveryAttempts: this.recoveryAttempts,
+      recoveryBackoffMs: this.recoveryBackoffMs,
+      createParser: () => {
+        const toolById = new Map<string, string>();
+        return (line, insight) => parseCursorLine(line, toolById, insight);
+      },
+      spawn: (resumeSessionId) =>
+        spawnLineProcess({
+          command: this.command,
+          args: buildCursorArgs({
+            prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
+            workDir: this.workDir,
+            model: this.model,
+            instructions: resumeSessionId ? undefined : this.instructions,
+            sessionId: resumeSessionId,
+          }),
+          cwd: this.workDir,
+          env: this.childEnv(),
+        }),
     });
-    this.running = spawned;
-    try {
-      for await (const line of spawned.stdout) {
-        for (const event of parseCursorLine(line, this.toolById)) {
-          yield redactBayEvent(event);
-        }
-      }
-      const finished = await spawned.wait();
-      const stderr = finished.stderr.trim();
-      if (stderr.length > 0) {
-        yield redactBayEvent({
-          kind: "diagnostic",
-          stream: "stderr",
-          text: stderr,
-        });
-      }
-      yield { kind: "exit", code: finished.code };
-    } finally {
-      this.running = undefined;
-    }
   }
 
   private childEnv(): NodeJS.ProcessEnv {
@@ -208,6 +199,8 @@ export async function openCursorBay(
         ? options.instructions
         : undefined,
     gitconfigPath,
+    recoveryAttempts: options.recoveryAttempts,
+    recoveryBackoffMs: options.recoveryBackoffMs,
   });
   await bay.syncGitconfig();
   return bay;

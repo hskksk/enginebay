@@ -48,10 +48,23 @@ describe("buildCursorArgs", () => {
     expect(args.at(-1)).toBe("You are in a bay.\n\ngo");
   });
 
-  it("does not use --continue or --yolo", () => {
+  it("does not use --continue or --yolo on a fresh run", () => {
     const args = buildCursorArgs({ prompt: "go", workDir: "/tmp/work" });
     expect(args).not.toContain("--continue");
+    expect(args).not.toContain("--resume");
     expect(args).not.toContain("--yolo");
+  });
+
+  it("resumes with --resume and does not prepend instructions again", () => {
+    const args = buildCursorArgs({
+      prompt: "Continue.",
+      workDir: "/tmp/work",
+      instructions: "You are in a bay.",
+      sessionId: "chat-1",
+    });
+    expect(args[args.indexOf("--resume") + 1]).toBe("chat-1");
+    expect(args.at(-1)).toBe("Continue.");
+    expect(args).not.toContain("--continue");
   });
 });
 

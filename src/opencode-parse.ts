@@ -1,4 +1,9 @@
 import { redactSecrets, redactSecretsDeep } from "./redact.js";
+import {
+  captureEngineEvent,
+  engineErrorFromRaw,
+  type RunInsight,
+} from "./run-insight.js";
 import type { BayEvent } from "./types.js";
 
 export function normalizeToolName(name: string): string {
@@ -11,6 +16,19 @@ export function redactBayEvent(event: BayEvent): BayEvent {
     case "thinking":
     case "diagnostic":
       return { ...event, text: redactSecrets(event.text) };
+    case "error":
+      return { ...event, message: redactSecrets(event.message) };
+    case "exit":
+      if (!event.error) {
+        return event;
+      }
+      return {
+        ...event,
+        error: {
+          ...event.error,
+          message: redactSecrets(event.error.message),
+        },
+      };
     case "tool_call":
       return {
         ...event,
@@ -106,6 +124,7 @@ function tokensEvent(raw: RawEvent): BayEvent | undefined {
 export function parseOpencodeLine(
   line: string,
   seenToolCalls: Set<string>,
+  insight?: RunInsight,
 ): BayEvent[] {
   const trimmed = line.trim();
   if (trimmed.length === 0) {
@@ -117,6 +136,13 @@ export function parseOpencodeLine(
   }
 
   const events: BayEvent[] = [];
+  const rec = asRecord(raw) ?? {};
+  captureEngineEvent(rec, insight);
+  const engineError = engineErrorFromRaw(rec);
+  if (engineError) {
+    events.push({ kind: "diagnostic", stream: "stdout", text: engineError });
+  }
+
   const tokenEvent = tokensEvent(raw);
   if (tokenEvent) {
     events.push(tokenEvent);

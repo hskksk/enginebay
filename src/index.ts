@@ -17,6 +17,7 @@ export type {
 } from "./workspace.js";
 export type {
   Bay,
+  BayError,
   BayEvent,
   DoctorReport,
   EngineId,

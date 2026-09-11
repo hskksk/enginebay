@@ -14,6 +14,7 @@ export function buildClaudeArgs(options: {
   mcpConfigPath: string;
   appendSystemPrompt?: string;
   model?: string;
+  sessionId?: string;
 }): string[] {
   // Do not pass --bare: it skips OAuth / Keychain credentials.
   const args = [
@@ -30,6 +31,9 @@ export function buildClaudeArgs(options: {
     "stream-json",
     "--verbose",
   ];
+  if (options.sessionId && options.sessionId.length > 0) {
+    args.push("--resume", options.sessionId);
+  }
   if (options.model && options.model.length > 0) {
     args.push("--model", options.model);
   }

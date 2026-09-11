@@ -56,13 +56,25 @@ const bay = await openBay({
 });
 
 for await (const event of bay.run("Read the briefing and set today's goals.")) {
-  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "diagnostic" | "exit"
+  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "diagnostic" | "error" | "exit"
 }
 
 await bay.close();
 ```
 
-Each `run()` is a **fresh CLI process**. Conversation continuity is the consumer's job (a redrive prompt), not `--continue` inside the engine.
+Each `run()` starts a **fresh CLI process**. Conversation continuity across successful turns is the consumer's job (a redrive prompt), not `--continue` inside the engine.
+
+If the CLI dies mid-turn with a **non-critical** error **and** a session id was captured, `run()` restarts the process and resumes that engine session with a follow-up prompt (`Continue.`). Without a session id, it fails instead of re-sending the original prompt. That matches how the CLIs actually resume: a new process plus a new user turn on the persisted session, not a replay of a crashed generation.
+
+Classification uses each engine's own error shape first:
+
+- OpenCode: `error.name` / `error.data.isRetryable`
+- Claude Code: `result.subtype` (`error_during_execution` vs max-turns / budget)
+- Cursor Agent: non-zero exit + stderr (the stream often has no terminal `result` on failure)
+
+Auth failures, a missing binary, and `abort()` are **critical**; everything else is worth one more process start. A CLI that exits 0 is never resumed, even if the stream carried an error event.
+
+Set `recoveryAttempts: 0` on `openBay` to disable restart; it must be a non-negative integer. `recoveryBackoffMs` (default 250) delays each resume, multiplied by the attempt number. Cancelling the `run()` iterator kills the child, escalating to SIGKILL if the CLI ignores SIGTERM.
 
 ## Interactive CLI
 

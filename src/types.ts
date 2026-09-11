@@ -37,6 +37,23 @@ export type OpenBayOptions = {
   hostHome?: string;
   model?: string;
   git?: { committerName?: string };
+  /**
+   * Extra CLI process starts after a non-critical failure. Default 2.
+   * Set 0 to disable restart/resume recovery.
+   */
+  recoveryAttempts?: number;
+  /**
+   * Delay in ms before a resume restart, multiplied by the attempt number.
+   * Default 250. Set 0 to retry immediately.
+   */
+  recoveryBackoffMs?: number;
+};
+
+export type BayError = {
+  /** Human-readable cause after secret redaction. */
+  message: string;
+  /** True when restarting the process cannot recover (auth, missing CLI, abort). */
+  critical: boolean;
 };
 
 export type BayEvent =
@@ -52,7 +69,8 @@ export type BayEvent =
     }
   | { kind: "tokens"; input?: number; output?: number; total?: number }
   | { kind: "diagnostic"; stream: "stdout" | "stderr"; text: string }
-  | { kind: "exit"; code: number };
+  | { kind: "error"; message: string; critical: boolean }
+  | { kind: "exit"; code: number; error?: BayError };
 
 export type DoctorReport = {
   ok: boolean;

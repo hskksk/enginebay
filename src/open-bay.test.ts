@@ -38,6 +38,35 @@ async function collectEvents(
   return events;
 }
 
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const started = Date.now();
+  while (!existsSync(path)) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`timed out waiting for ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntilDead(pid: number, timeoutMs = 8000): Promise<void> {
+  const started = Date.now();
+  while (pidAlive(pid)) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`pid ${pid} still alive`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 describe("openBay OpenCode isolation", () => {
   it("spawns a fake opencode with isolated XDG, inherited auth, and no host config writes", async () => {
     const hostHome = await tempDir("enginebay-host-");
@@ -206,6 +235,601 @@ describe("openBay OpenCode isolation", () => {
     const events = await collectEvents(bay, "go");
     await bay.close();
     expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+  });
+});
+
+describe("openBay process error recovery", () => {
+  it("restarts and resumes after a non-critical crash", async () => {
+    const hostHome = await tempDir("enginebay-recover-host-");
+    const workDir = await tempDir("enginebay-recover-work-");
+    const binDir = await tempDir("enginebay-recover-bin-");
+    const dumpDir = await tempDir("enginebay-recover-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_UNLESS_RESUME: "ECONNRESET: connection reset",
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_recover",
+        }),
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "text",
+          part: { type: "text", text: "resumed ok" },
+        }),
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "read the briefing");
+    await bay.close();
+
+    expect(events.map((event) => event.kind)).toEqual([
+      "diagnostic",
+      "diagnostic",
+      "text",
+      "exit",
+    ]);
+    expect(events[0]).toMatchObject({
+      kind: "diagnostic",
+      stream: "stderr",
+      text: "ECONNRESET: connection reset",
+    });
+    expect(events[1]).toMatchObject({
+      kind: "diagnostic",
+      stream: "stderr",
+    });
+    expect((events[1] as { text: string }).text).toMatch(
+      /non-critical error; restarting process and resuming session/,
+    );
+    expect(events[2]).toEqual({ kind: "text", text: "resumed ok" });
+    expect(events[3]).toEqual({ kind: "exit", code: 0 });
+
+    const firstArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-1.json"), "utf8"),
+    ) as string[];
+    const secondArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-2.json"), "utf8"),
+    ) as string[];
+    expect(firstArgv).not.toContain("--session");
+    expect(firstArgv.at(-1)).toBe("read the briefing");
+    expect(secondArgv[secondArgv.indexOf("--session") + 1]).toBe("ses_recover");
+    expect(secondArgv.at(-1)).toBe("Continue.");
+    expect(existsSync(join(dumpDir, "argv-3.json"))).toBe(false);
+  });
+
+  it("returns a critical error without restarting after auth failure", async () => {
+    const hostHome = await tempDir("enginebay-crit-host-");
+    const workDir = await tempDir("enginebay-crit-work-");
+    const binDir = await tempDir("enginebay-crit-bin-");
+    const dumpDir = await tempDir("enginebay-crit-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_STDERR: "Authentication required\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 2,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+
+    expect(events).toContainEqual({
+      kind: "diagnostic",
+      stream: "stderr",
+      text: "Authentication required",
+    });
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toEqual({
+      kind: "error",
+      message: "enginebay: Authentication required",
+      critical: true,
+    });
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 1,
+      error: {
+        message: "enginebay: Authentication required",
+        critical: true,
+      },
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("reports a critical error when the CLI is missing", async () => {
+    const emptyPath = await tempDir("enginebay-missing-cli-");
+    const workDir = await tempDir("enginebay-missing-work-");
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome: emptyPath,
+      hostEnv: { HOME: emptyPath, PATH: emptyPath },
+      recoveryAttempts: 2,
+    });
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toMatchObject({ kind: "error", critical: true });
+    expect((errorEvent as { message: string }).message).toMatch(
+      /ENOENT|not found|could not launch/i,
+    );
+    expect(events.at(-1)).toMatchObject({
+      kind: "exit",
+      error: { critical: true },
+    });
+  });
+
+  it("redacts secrets in process error messages", async () => {
+    const hostHome = await tempDir("enginebay-err-redact-host-");
+    const workDir = await tempDir("enginebay-err-redact-work-");
+    const binDir = await tempDir("enginebay-err-redact-bin-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_FAKE_STDERR: "authentication failed token ghs_LIVESECRET99\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 0,
+    });
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(JSON.stringify(events)).not.toContain("ghs_LIVESECRET99");
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toMatchObject({
+      kind: "error",
+      critical: true,
+    });
+    expect((errorEvent as { message: string }).message).toMatch(/\[redacted\]/);
+  });
+
+  it("resumes a cursor-agent session after a non-critical crash", async () => {
+    const hostHome = await tempDir("enginebay-cursor-recover-host-");
+    const workDir = await tempDir("enginebay-cursor-recover-work-");
+    const binDir = await tempDir("enginebay-cursor-recover-bin-");
+    const dumpDir = await tempDir("enginebay-cursor-recover-dump-");
+    await installFakeCommand(binDir, "cursor-agent");
+
+    const bay = await openBay({
+      engine: "cursor-agent",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_UNLESS_RESUME: "socket hang up",
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "cursor resumed" }],
+          },
+        }),
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.map((event) => event.kind)).toEqual([
+      "diagnostic",
+      "diagnostic",
+      "text",
+      "exit",
+    ]);
+    expect(events[2]).toEqual({ kind: "text", text: "cursor resumed" });
+    const secondArgv = JSON.parse(
+      await readFile(join(dumpDir, "argv-2.json"), "utf8"),
+    ) as string[];
+    expect(secondArgv[secondArgv.indexOf("--resume") + 1]).toBe("sess-recover");
+    expect(secondArgv.at(-1)).toBe("Continue.");
+  });
+
+  it("rejects invalid recoveryAttempts and recoveryBackoffMs", async () => {
+    const opts = {
+      engine: "opencode" as const,
+      hostHome: "/tmp",
+      hostEnv: { HOME: "/tmp", PATH: process.env.PATH },
+    };
+    await expect(
+      openBay({ ...opts, recoveryAttempts: Number.POSITIVE_INFINITY }),
+    ).rejects.toThrow(/recoveryAttempts must be a non-negative integer/);
+    await expect(openBay({ ...opts, recoveryAttempts: Number.NaN })).rejects.toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    await expect(openBay({ ...opts, recoveryAttempts: -1 })).rejects.toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    await expect(openBay({ ...opts, recoveryAttempts: 1.5 })).rejects.toThrow(
+      /recoveryAttempts must be a non-negative integer/,
+    );
+    await expect(openBay({ ...opts, recoveryBackoffMs: -1 })).rejects.toThrow(
+      /recoveryBackoffMs must be a non-negative number/,
+    );
+  });
+
+  it("does not restart when a non-critical crash has no session id", async () => {
+    const hostHome = await tempDir("enginebay-nosession-host-");
+    const workDir = await tempDir("enginebay-nosession-work-");
+    const binDir = await tempDir("enginebay-nosession-bin-");
+    const dumpDir = await tempDir("enginebay-nosession-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_UNLESS_RESUME: "ECONNRESET: connection reset",
+        ENGINEBAY_FAKE_NO_SESSION: "1",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    const errorEvent = events.find((event) => event.kind === "error");
+    expect(errorEvent).toMatchObject({
+      kind: "error",
+      critical: false,
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("kills the child when the run iterator is cancelled", async () => {
+    const hostHome = await tempDir("enginebay-hang-host-");
+    const workDir = await tempDir("enginebay-hang-work-");
+    const binDir = await tempDir("enginebay-hang-bin-");
+    const dumpDir = await tempDir("enginebay-hang-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const iter = bay.run("go")[Symbol.asyncIterator]();
+    const pending = iter.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+    expect(pidAlive(pid)).toBe(true);
+    await iter.return?.();
+    await pending.catch(() => undefined);
+    await waitUntilDead(pid);
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+    await bay.close();
+  });
+
+  it("does not let a previous run restart after a later run starts", async () => {
+    const hostHome = await tempDir("enginebay-race-host-");
+    const workDir = await tempDir("enginebay-race-work-");
+    const binDir = await tempDir("enginebay-race-bin-");
+    const dumpDir = await tempDir("enginebay-race-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const first = bay.run("first")[Symbol.asyncIterator]();
+    const firstEventsPromise = (async () => {
+      const events = [];
+      for (;;) {
+        const step = await first.next();
+        if (step.done) {
+          return events;
+        }
+        events.push(step.value);
+      }
+    })();
+    await waitForFile(join(dumpDir, "pid"));
+    const firstPid = Number(
+      (await readFile(join(dumpDir, "pid"), "utf8")).trim(),
+    );
+
+    const secondEvents = await collectEvents(bay, "second");
+    const firstEvents = await firstEventsPromise;
+    await waitUntilDead(firstPid);
+
+    expect(secondEvents.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(firstEvents.find((event) => event.kind === "error")).toMatchObject({
+      kind: "error",
+      critical: true,
+      message: "enginebay: run aborted",
+    });
+    expect(existsSync(join(dumpDir, "argv-3.json"))).toBe(false);
+    await bay.close();
+  });
+
+  it("resumes the newest session id on the second retry", async () => {
+    const hostHome = await tempDir("enginebay-chain-host-");
+    const workDir = await tempDir("enginebay-chain-work-");
+    const binDir = await tempDir("enginebay-chain-bin-");
+    const dumpDir = await tempDir("enginebay-chain-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_FAIL_COUNT: "2",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+
+    const argvFor = async (spawn: number) =>
+      JSON.parse(
+        await readFile(join(dumpDir, `argv-${spawn}.json`), "utf8"),
+      ) as string[];
+    const second = await argvFor(2);
+    const third = await argvFor(3);
+    expect(second[second.indexOf("--session") + 1]).toBe("sess-1");
+    expect(third[third.indexOf("--session") + 1]).toBe("sess-2");
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+  });
+
+  it("does not restart a critical failure that reported a session id", async () => {
+    const hostHome = await tempDir("enginebay-critsess-host-");
+    const workDir = await tempDir("enginebay-critsess-work-");
+    const binDir = await tempDir("enginebay-critsess-bin-");
+    const dumpDir = await tempDir("enginebay-critsess-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_auth",
+        }),
+        ENGINEBAY_FAKE_STDERR: "401 Unauthorized\n",
+        ENGINEBAY_FAKE_EXIT: "1",
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.find((event) => event.kind === "error")).toMatchObject({
+      kind: "error",
+      critical: true,
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("reports an engine error on a clean exit without restarting", async () => {
+    const hostHome = await tempDir("enginebay-cleanerr-host-");
+    const workDir = await tempDir("enginebay-cleanerr-work-");
+    const binDir = await tempDir("enginebay-cleanerr-bin-");
+    const dumpDir = await tempDir("enginebay-cleanerr-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_SESSION_EVENT: JSON.stringify({
+          type: "system",
+          sessionID: "ses_clean",
+        }),
+        ENGINEBAY_FAKE_EVENTS: JSON.stringify({
+          type: "error",
+          error: {
+            name: "APIError",
+            message: "overloaded",
+            data: { isRetryable: true },
+          },
+        }),
+      },
+      recoveryAttempts: 2,
+      recoveryBackoffMs: 0,
+    });
+
+    const events = await collectEvents(bay, "go");
+    await bay.close();
+    expect(events.find((event) => event.kind === "error")).toMatchObject({
+      kind: "error",
+      critical: false,
+    });
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+  });
+
+  it("escalates to SIGKILL when the CLI ignores SIGTERM", async () => {
+    const hostHome = await tempDir("enginebay-sigkill-host-");
+    const workDir = await tempDir("enginebay-sigkill-work-");
+    const binDir = await tempDir("enginebay-sigkill-bin-");
+    const dumpDir = await tempDir("enginebay-sigkill-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+        ENGINEBAY_FAKE_IGNORE_SIGTERM: "1",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const iter = bay.run("go")[Symbol.asyncIterator]();
+    const pending = iter.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+    await iter.return?.();
+    await pending.catch(() => undefined);
+    await waitUntilDead(pid, 10_000);
+    await bay.close();
+  }, 20_000);
+
+  it("waits for an un-awaited abort before close deletes the isolation dirs", async () => {
+    const hostHome = await tempDir("enginebay-teardown-host-");
+    const workDir = await tempDir("enginebay-teardown-work-");
+    const binDir = await tempDir("enginebay-teardown-bin-");
+    const dumpDir = await tempDir("enginebay-teardown-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+        ENGINEBAY_FAKE_SIGTERM_DELAY_MS: "400",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const iter = bay.run("go")[Symbol.asyncIterator]();
+    const pending = iter.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+
+    void bay.abort();
+    await bay.close();
+    expect(pidAlive(pid)).toBe(false);
+    await pending.catch(() => undefined);
+    await iter.return?.();
+  });
+
+  it("closing an iterator that never ran does not abort the live run", async () => {
+    const hostHome = await tempDir("enginebay-unused-host-");
+    const workDir = await tempDir("enginebay-unused-work-");
+    const binDir = await tempDir("enginebay-unused-bin-");
+    const dumpDir = await tempDir("enginebay-unused-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+      },
+      recoveryBackoffMs: 0,
+    });
+
+    const live = bay.run("live")[Symbol.asyncIterator]();
+    const pending = live.next();
+    await waitForFile(join(dumpDir, "pid"));
+    const pid = Number((await readFile(join(dumpDir, "pid"), "utf8")).trim());
+
+    const unused = bay.run("unused")[Symbol.asyncIterator]();
+    await unused.return?.();
+
+    expect(pidAlive(pid)).toBe(true);
+    expect(existsSync(join(dumpDir, "argv-2.json"))).toBe(false);
+
+    await live.return?.();
+    await pending.catch(() => undefined);
+    await bay.close();
   });
 });
 

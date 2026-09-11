@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BayProcessControl, startBayRun } from "./bay-run.js";
 import {
   applyClaudeCredentialEnv,
   buildClaudeArgs,
@@ -14,8 +15,12 @@ import {
   extraEnvHasGitToken,
 } from "./env.js";
 import { writeIsolatedGitconfig } from "./gitconfig.js";
-import { redactBayEvent } from "./opencode-parse.js";
-import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
+import {
+  RECOVERY_CONTINUE_PROMPT,
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
+} from "./process-error.js";
+import { spawnLineProcess } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 
@@ -39,9 +44,9 @@ class ClaudeBay implements Bay {
   private readonly instructions: string | undefined;
   private readonly mcpConfigPath: string;
   private readonly gitconfigPath: string;
-  private running: SpawnedRun | undefined;
-  private closed = false;
-  private readonly toolById = new Map<string, string>();
+  private readonly recoveryAttempts: number;
+  private readonly recoveryBackoffMs: number;
+  private readonly control = new BayProcessControl();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -54,6 +59,8 @@ class ClaudeBay implements Bay {
     instructions: string | undefined;
     mcpConfigPath: string;
     gitconfigPath: string;
+    recoveryAttempts?: number;
+    recoveryBackoffMs?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -66,6 +73,8 @@ class ClaudeBay implements Bay {
     this.instructions = input.instructions;
     this.mcpConfigPath = input.mcpConfigPath;
     this.gitconfigPath = input.gitconfigPath;
+    this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
+    this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
 
   async updateExtraEnv(
@@ -80,13 +89,12 @@ class ClaudeBay implements Bay {
   }
 
   async abort(): Promise<void> {
-    await this.running?.kill("SIGTERM");
-    this.running = undefined;
+    await this.control.abort();
   }
 
   async close(): Promise<void> {
-    await this.abort();
-    this.closed = true;
+    this.control.closed = true;
+    await this.control.abort();
     const jobs = [rm(this.runtimeDir, RM_OPTS)];
     if (this.workspace.ephemeral) {
       jobs.push(rm(this.workDir, RM_OPTS));
@@ -94,45 +102,28 @@ class ClaudeBay implements Bay {
     await Promise.all(jobs);
   }
 
-  async *run(prompt: string): AsyncIterable<BayEvent> {
-    if (this.closed) {
-      throw new Error("enginebay: bay is closed");
-    }
-    if (this.running) {
-      await this.abort();
-    }
-    this.toolById.clear();
-    const spawned = spawnLineProcess({
-      command: CLAUDE_COMMAND,
-      args: buildClaudeArgs({
-        prompt,
-        mcpConfigPath: this.mcpConfigPath,
-        appendSystemPrompt: this.instructions,
-        model: this.model,
-      }),
-      cwd: this.workDir,
-      env: this.childEnv(),
+  run(prompt: string): AsyncIterable<BayEvent> {
+    return startBayRun(this.control, {
+      recoveryAttempts: this.recoveryAttempts,
+      recoveryBackoffMs: this.recoveryBackoffMs,
+      createParser: () => {
+        const toolById = new Map<string, string>();
+        return (line, insight) => parseClaudeLine(line, toolById, insight);
+      },
+      spawn: (resumeSessionId) =>
+        spawnLineProcess({
+          command: CLAUDE_COMMAND,
+          args: buildClaudeArgs({
+            prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
+            mcpConfigPath: this.mcpConfigPath,
+            appendSystemPrompt: this.instructions,
+            model: this.model,
+            sessionId: resumeSessionId,
+          }),
+          cwd: this.workDir,
+          env: this.childEnv(),
+        }),
     });
-    this.running = spawned;
-    try {
-      for await (const line of spawned.stdout) {
-        for (const event of parseClaudeLine(line, this.toolById)) {
-          yield redactBayEvent(event);
-        }
-      }
-      const finished = await spawned.wait();
-      const stderr = finished.stderr.trim();
-      if (stderr.length > 0) {
-        yield redactBayEvent({
-          kind: "diagnostic",
-          stream: "stderr",
-          text: stderr,
-        });
-      }
-      yield { kind: "exit", code: finished.code };
-    } finally {
-      this.running = undefined;
-    }
   }
 
   private childEnv(): NodeJS.ProcessEnv {
@@ -194,6 +185,8 @@ export async function openClaudeBay(
         : undefined,
     mcpConfigPath,
     gitconfigPath,
+    recoveryAttempts: options.recoveryAttempts,
+    recoveryBackoffMs: options.recoveryBackoffMs,
   });
   await bay.syncGitconfig();
   return bay;

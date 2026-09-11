@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BayProcessControl, startBayRun } from "./bay-run.js";
 import { commandExists, readCommandVersion } from "./command.js";
 import {
   buildChildEnv,
@@ -17,7 +18,7 @@ import {
   OPENCODE_COMMAND,
   opencodeAuthPresent,
 } from "./opencode.js";
-import { parseOpencodeLine, redactBayEvent } from "./opencode-parse.js";
+import { parseOpencodeLine } from "./opencode-parse.js";
 import { openClaudeBay } from "./claude-bay.js";
 import { openCursorBay } from "./cursor-bay.js";
 import {
@@ -30,7 +31,12 @@ import {
   CURSOR_COMMAND_ALIASES,
   cursorAuthPresent,
 } from "./cursor.js";
-import { spawnLineProcess, type SpawnedRun } from "./spawn.js";
+import {
+  resolveRecoveryAttempts,
+  resolveRecoveryBackoffMs,
+  RECOVERY_CONTINUE_PROMPT,
+} from "./process-error.js";
+import { spawnLineProcess } from "./spawn.js";
 import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 import { prepareWorkspace } from "./workspace.js";
@@ -56,8 +62,9 @@ class OpencodeBay implements Bay {
   private readonly instructionsPath: string | undefined;
   private readonly mcpConfig: Record<string, unknown>;
   private readonly gitconfigPath: string;
-  private running: SpawnedRun | undefined;
-  private closed = false;
+  private readonly recoveryAttempts: number;
+  private readonly recoveryBackoffMs: number;
+  private readonly control = new BayProcessControl();
 
   constructor(input: {
     workspace: PreparedWorkspace;
@@ -71,6 +78,8 @@ class OpencodeBay implements Bay {
     instructionsPath: string | undefined;
     mcpConfig: Record<string, unknown>;
     gitconfigPath: string;
+    recoveryAttempts?: number;
+    recoveryBackoffMs?: number;
   }) {
     this.workDir = input.workspace.path;
     this.workspace = input.workspace;
@@ -84,6 +93,8 @@ class OpencodeBay implements Bay {
     this.instructionsPath = input.instructionsPath;
     this.mcpConfig = input.mcpConfig;
     this.gitconfigPath = input.gitconfigPath;
+    this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
+    this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
 
   async updateExtraEnv(
@@ -98,13 +109,12 @@ class OpencodeBay implements Bay {
   }
 
   async abort(): Promise<void> {
-    await this.running?.kill("SIGTERM");
-    this.running = undefined;
+    await this.control.abort();
   }
 
   async close(): Promise<void> {
-    await this.abort();
-    this.closed = true;
+    this.control.closed = true;
+    await this.control.abort();
     const jobs = [
       rm(this.runtimeDir, RM_OPTS),
       rm(this.dataDir, RM_OPTS),
@@ -115,46 +125,28 @@ class OpencodeBay implements Bay {
     await Promise.all(jobs);
   }
 
-  async *run(prompt: string): AsyncIterable<BayEvent> {
-    if (this.closed) {
-      throw new Error("enginebay: bay is closed");
-    }
-    if (this.running) {
-      await this.abort();
-    }
-    const args = buildOpencodeArgs({
-      workDir: this.workDir,
-      prompt,
-      model: this.model,
+  run(prompt: string): AsyncIterable<BayEvent> {
+    return startBayRun(this.control, {
+      recoveryAttempts: this.recoveryAttempts,
+      recoveryBackoffMs: this.recoveryBackoffMs,
+      createParser: () => {
+        const seenToolCalls = new Set<string>();
+        return (line, insight) =>
+          parseOpencodeLine(line, seenToolCalls, insight);
+      },
+      spawn: (resumeSessionId) =>
+        spawnLineProcess({
+          command: OPENCODE_COMMAND,
+          args: buildOpencodeArgs({
+            workDir: this.workDir,
+            prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
+            model: this.model,
+            sessionId: resumeSessionId,
+          }),
+          cwd: this.workDir,
+          env: this.childEnv(),
+        }),
     });
-    const env = this.childEnv();
-    const spawned = spawnLineProcess({
-      command: OPENCODE_COMMAND,
-      args,
-      cwd: this.workDir,
-      env,
-    });
-    this.running = spawned;
-    const seenToolCalls = new Set<string>();
-    try {
-      for await (const line of spawned.stdout) {
-        for (const event of parseOpencodeLine(line, seenToolCalls)) {
-          yield redactBayEvent(event);
-        }
-      }
-      const finished = await spawned.wait();
-      const stderr = finished.stderr.trim();
-      if (stderr.length > 0) {
-        yield redactBayEvent({
-          kind: "diagnostic",
-          stream: "stderr",
-          text: stderr,
-        });
-      }
-      yield { kind: "exit", code: finished.code };
-    } finally {
-      this.running = undefined;
-    }
   }
 
   private childEnv(): NodeJS.ProcessEnv {
@@ -195,6 +187,8 @@ class OpencodeBay implements Bay {
 }
 
 export async function openBay(options: OpenBayOptions): Promise<Bay> {
+  resolveRecoveryAttempts(options.recoveryAttempts);
+  resolveRecoveryBackoffMs(options.recoveryBackoffMs);
   const isolation = options.isolation?.kind ?? "env";
   if (isolation !== "env") {
     throw new Error(`enginebay: isolation ${isolation} is not implemented`);
@@ -269,6 +263,8 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
     instructionsPath,
     mcpConfig,
     gitconfigPath,
+    recoveryAttempts: options.recoveryAttempts,
+    recoveryBackoffMs: options.recoveryBackoffMs,
   });
   await bay.syncGitconfig();
   return bay;

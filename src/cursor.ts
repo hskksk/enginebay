@@ -29,9 +29,14 @@ export function buildCursorArgs(options: {
   workDir: string;
   model?: string;
   instructions?: string;
+  sessionId?: string;
 }): string[] {
+  const sessionId =
+    options.sessionId && options.sessionId.length > 0
+      ? options.sessionId
+      : undefined;
   const prompt =
-    options.instructions && options.instructions.length > 0
+    !sessionId && options.instructions && options.instructions.length > 0
       ? `${options.instructions}\n\n${options.prompt}`
       : options.prompt;
   const args = [
@@ -46,6 +51,9 @@ export function buildCursorArgs(options: {
     "--workspace",
     options.workDir,
   ];
+  if (sessionId) {
+    args.push("--resume", sessionId);
+  }
   if (options.model && options.model.length > 0) {
     args.push("--model", options.model);
   }

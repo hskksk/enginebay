@@ -59,6 +59,37 @@ describe("parseClaudeLine", () => {
     ]);
   });
 
+  it("captures session_id, result subtype, and errors[] on insight", () => {
+    const insight: {
+      sessionId?: string;
+      engineErrorMessage?: string;
+      engineResultSubtype?: string;
+    } = {};
+    parseClaudeLine(
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-claude",
+      }),
+      new Map(),
+      insight,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        session_id: "sess-claude",
+        errors: ["API error: 529 overloaded"],
+      }),
+      new Map(),
+      insight,
+    );
+    expect(insight.sessionId).toBe("sess-claude");
+    expect(insight.engineResultSubtype).toBe("error_during_execution");
+    expect(insight.engineErrorMessage).toBe("API error: 529 overloaded");
+  });
+
   it("treats non-JSON stdout as a diagnostic", () => {
     expect(parseAll(["not json"])).toEqual([
       { kind: "diagnostic", stream: "stdout", text: "not json" },

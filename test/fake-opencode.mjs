@@ -14,6 +14,7 @@ if (process.argv.includes("--version")) {
 }
 
 const dumpDir = process.env.ENGINEBAY_DUMP_DIR;
+let spawnCount = 0;
 if (dumpDir) {
   mkdirSync(dumpDir, { recursive: true });
   const isolatedShare = join(process.env.XDG_DATA_HOME ?? "", "opencode");
@@ -42,10 +43,14 @@ if (dumpDir) {
   const mcpConfigPath =
     mcpConfigIndex >= 0 ? process.argv[mcpConfigIndex + 1] : undefined;
   const gitConfigPath = process.env.GIT_CONFIG_GLOBAL;
-  writeFileSync(
-    join(dumpDir, "argv.json"),
-    `${JSON.stringify(process.argv.slice(2), null, 2)}\n`,
-  );
+  const countPath = join(dumpDir, "count");
+  spawnCount = existsSync(countPath)
+    ? Number(readFileSync(countPath, "utf8")) + 1
+    : 1;
+  writeFileSync(countPath, `${spawnCount}\n`);
+  const argvJson = `${JSON.stringify(process.argv.slice(2), null, 2)}\n`;
+  writeFileSync(join(dumpDir, "argv.json"), argvJson);
+  writeFileSync(join(dumpDir, `argv-${spawnCount}.json`), argvJson);
   writeFileSync(
     join(dumpDir, "env.json"),
     `${JSON.stringify(
@@ -92,18 +97,95 @@ if (dumpDir) {
   );
 }
 
-const events = process.env.ENGINEBAY_FAKE_EVENTS;
-if (events && events.length > 0) {
-  process.stdout.write(events.endsWith("\n") ? events : `${events}\n`);
+const hangFirst =
+  Boolean(process.env.ENGINEBAY_FAKE_HANG) &&
+  process.env.ENGINEBAY_FAKE_HANG.length > 0 &&
+  spawnCount <= 1;
+function sessionLine(id) {
+  return JSON.stringify({
+    type: "system",
+    subtype: "init",
+    session_id: id,
+    sessionID: id,
+  });
+}
+
+if (hangFirst) {
+  if (process.env.ENGINEBAY_FAKE_IGNORE_SIGTERM === "1") {
+    process.on("SIGTERM", () => {
+      /* only SIGKILL can stop this one */
+    });
+  }
+  const sigtermDelayMs = Number(process.env.ENGINEBAY_FAKE_SIGTERM_DELAY_MS ?? "0");
+  if (Number.isFinite(sigtermDelayMs) && sigtermDelayMs > 0) {
+    process.on("SIGTERM", () => {
+      setTimeout(() => process.exit(0), sigtermDelayMs);
+    });
+  }
+  setInterval(() => {
+    /* keep the event loop alive until the signal lands */
+  }, 60_000);
+  // Written last: the pid file is what tells the test the handlers are ready.
+  if (dumpDir) {
+    writeFileSync(join(dumpDir, "pid"), `${process.pid}\n`);
+  }
 } else {
-  process.stdout.write(
-    `${JSON.stringify({ type: "text", part: { type: "text", text: "ok" } })}\n`,
-  );
-}
+  const argv = process.argv.slice(2);
+  const isResume =
+    argv.includes("--resume") ||
+    argv.includes("--session") ||
+    argv.includes("-s");
+  const failUnlessResume = process.env.ENGINEBAY_FAKE_FAIL_UNLESS_RESUME;
+  const failCount = Number(process.env.ENGINEBAY_FAKE_FAIL_COUNT ?? "0");
+  const failFirstN = Number.isFinite(failCount) ? failCount : 0;
+  const explicitSession = process.env.ENGINEBAY_FAKE_SESSION_EVENT;
+  const skipSession =
+    process.env.ENGINEBAY_FAKE_NO_SESSION === "1" || explicitSession === "";
 
-if (process.env.ENGINEBAY_FAKE_STDERR) {
-  process.stderr.write(process.env.ENGINEBAY_FAKE_STDERR);
-}
+  let sessionEvent;
+  if (!skipSession) {
+    if (explicitSession && explicitSession.length > 0) {
+      sessionEvent = explicitSession;
+    } else if (failFirstN > 0) {
+      // A distinct id per process start, like a real resume does.
+      sessionEvent = sessionLine(`sess-${spawnCount}`);
+    } else if (failUnlessResume && failUnlessResume.length > 0) {
+      sessionEvent = sessionLine("sess-recover");
+    }
+  }
+  if (sessionEvent) {
+    process.stdout.write(
+      sessionEvent.endsWith("\n") ? sessionEvent : `${sessionEvent}\n`,
+    );
+  }
 
-const code = Number(process.env.ENGINEBAY_FAKE_EXIT ?? "0");
-process.exit(Number.isFinite(code) ? code : 0);
+  if (failFirstN > 0 && spawnCount <= failFirstN) {
+    process.stderr.write("ECONNRESET: connection reset\n");
+    process.exit(1);
+  }
+
+  if (failUnlessResume && failUnlessResume.length > 0 && !isResume) {
+    process.stderr.write(
+      failUnlessResume.endsWith("\n")
+        ? failUnlessResume
+        : `${failUnlessResume}\n`,
+    );
+    process.exit(1);
+  }
+
+  const events = process.env.ENGINEBAY_FAKE_EVENTS;
+  if (events && events.length > 0) {
+    process.stdout.write(events.endsWith("\n") ? events : `${events}\n`);
+  } else {
+    process.stdout.write(
+      `${JSON.stringify({ type: "text", part: { type: "text", text: "ok" } })}\n`,
+    );
+  }
+
+  if (process.env.ENGINEBAY_FAKE_STDERR) {
+    process.stderr.write(process.env.ENGINEBAY_FAKE_STDERR);
+  }
+
+  const code = Number(process.env.ENGINEBAY_FAKE_EXIT ?? "0");
+  process.exit(Number.isFinite(code) ? code : 0);
+}
