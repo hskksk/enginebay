@@ -68,6 +68,31 @@ export async function parseCliOptions(
       case "--model":
         result.model = value();
         break;
+      case "--agent":
+        result.agent = value();
+        break;
+      case "--data-dir":
+        result.dataDir = value();
+        break;
+      case "--auth-source-dir":
+        result.auth = { sourceDir: value() };
+        break;
+      case "--plugin": {
+        const plugin = value();
+        const plugins = result.config?.plugins ?? [];
+        plugins.push(plugin);
+        result.config = { ...result.config, plugins };
+        break;
+      }
+      case "--session":
+        result.sessionId = value();
+        break;
+      case "--continue":
+        if (inlineValue !== undefined) {
+          throw new Error(`enginebay: ${name} does not take a value`);
+        }
+        result.continueLast = true;
+        break;
       case "--instructions":
         instructions = value();
         break;
@@ -109,6 +134,9 @@ export async function parseCliOptions(
 
   if (result.workDir !== undefined && result.workspaceId !== undefined) {
     throw new Error("enginebay: set either --work-dir or --workspace-id, not both");
+  }
+  if (result.sessionId && result.continueLast) {
+    throw new Error("enginebay: set either --session or --continue, not both");
   }
   if (instructions !== undefined && instructionsFile !== undefined) {
     throw new Error(

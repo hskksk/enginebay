@@ -89,6 +89,24 @@ export type McpStdio = {
   name?: string;
 };
 
+export type SpawnAdapter = {
+  spawn?: (req: {
+    command: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+  }) => SpawnedRun;
+  mapPath?: (hostPath: string) => string;
+  mapEnv?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
+
+export type EngineConfig = {
+  plugins?: string[];
+  extra?: Record<string, unknown>;
+};
+
+export type ExitReason = "ok" | "error" | "abort" | "timeout";
+
 export type OpenBayOptions = {
   engine: EngineId;
   workDir?: string;       // explicit path; close() does not delete
@@ -98,12 +116,18 @@ export type OpenBayOptions = {
   mcp?: McpStdio;
   /** Inline text. enginebay writes a temp file if the engine only accepts paths. */
   instructions?: string;
-  /** Merged last. Use for minted GH_TOKEN, model overrides, etc. */
+  /** Product temp vars. Do not set HOME / XDG_* here. */
   extraEnv?: Record<string, string>;
   /** Override host process.env / homedir in tests. */
   hostEnv?: NodeJS.ProcessEnv;
   hostHome?: string;
   model?: string;
+  agent?: string;         // OpenCode --agent; other engines ignore
+  config?: EngineConfig;  // OpenCode plugins + extra; mcp/instructions stay owned
+  dataDir?: string;       // OpenCode XDG_DATA_HOME; omit → temp deleted on close()
+  resetSession?: boolean; // delete opencode.db* but keep auth links
+  auth?: { sourceDir?: string };
+  spawn?: SpawnAdapter;
   git?: { committerName?: string };
   /** Extra CLI starts after a non-critical failure. Default 2. Must be a non-negative integer. */
   recoveryAttempts?: number;
@@ -129,7 +153,7 @@ export type BayEvent =
   | { kind: "error"; message: string; critical: boolean }
   | { kind: "turn"; reason: string; sessionId?: string; messageId?: string }
   | { kind: "session"; phase: "created" | "idle"; sessionId: string }
-  | { kind: "exit"; code: number; sessionId?: string; error?: BayError };
+  | { kind: "exit"; code: number; reason?: ExitReason; sessionId?: string; error?: BayError };
 
 export type DoctorReport = {
   ok: boolean;
@@ -144,7 +168,7 @@ export interface Bay {
   readonly workDir: string;
   readonly workspace: PreparedWorkspace;
   readonly sessionId: string | undefined;
-  run(prompt: string): AsyncIterable<BayEvent>;
+  run(prompt: string, opts?: { timeoutMs?: number }): AsyncIterable<BayEvent>;
   updateExtraEnv(extraEnv: Record<string, string>, git?: { committerName?: string }): Promise<void>;
   abort(): Promise<void>;
   /** Remove isolation temps. Deletes workDir only when it is ephemeral. */
@@ -162,6 +186,7 @@ export function openBay(options: OpenBayOptions): Promise<Bay>;
 export function doctor(engine: EngineId, host?: {
   env?: NodeJS.ProcessEnv;
   home?: string;
+  authSourceDir?: string;
 }): Promise<DoctorReport>;
 
 export type LaunchEngineId =
@@ -172,13 +197,20 @@ export type LaunchEngineId =
 
 export function launchEngine(options: {
   engine: LaunchEngineId;
-  args?: string[];        // forwarded to the native CLI
+  args?: string[];        // native extras; OpenCode defaults to run --interactive --dir
   workDir?: string;       // defaults to process.cwd()
   workspaceId?: string;
   isolation?: { kind: IsolationKind };
   mcp?: McpStdio;
   instructions?: string;
   model?: string;
+  agent?: string;
+  config?: EngineConfig;
+  dataDir?: string;
+  resetSession?: boolean;
+  auth?: { sourceDir?: string };
+  sessionId?: string;
+  continueLast?: boolean;
   extraEnv?: Record<string, string>;
   git?: { committerName?: string };
 }): Promise<number>;      // native exit status
@@ -203,6 +235,11 @@ CLI mappings:
 | --- | --- |
 | `--work-dir`, `--workspace-id` | `workDir`, `workspaceId` |
 | `--model` | `model` |
+| `--agent` | `agent` |
+| `--data-dir` | `dataDir` |
+| `--auth-source-dir` | `auth.sourceDir` |
+| `--plugin` | `config.plugins` |
+| `--session`, `--continue` | `sessionId`, `continueLast` |
 | `--instructions`, `--instructions-file` | inline `instructions` |
 | `--mcp-command`, repeatable `--mcp-arg` / `--mcp-env`, `--mcp-name` | `mcp` |
 | repeatable `--env` | `extraEnv` |

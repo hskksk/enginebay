@@ -42,21 +42,24 @@ if (!check.ok) throw new Error(check.message);
 
 const bay = await openBay({
   engine: "opencode",
-  workspaceId: "my-project",
-  mcp: {
-    command: process.execPath,
-    args: ["/path/to/mcp-proxy"],
-    env: { API_URL: "http://127.0.0.1:8787" },
-  },
-  instructions: "Follow the tool protocol. Tool calls are the primary output.",
+  workDir: "/path/to/workspace",
+  dataDir: "/path/to/session-data",
+  auth: { sourceDir: "/path/to/opencode-auth" },
+  model: "provider/model",
+  agent: "eval",
+  config: { plugins: ["opencode-gemini-auth@latest"] },
+  recoveryAttempts: 0, // eval / harness: disable resume restarts (default is 2)
   extraEnv: {
-    // Optional. Host GH_TOKEN is stripped unless you pass one.
+    // Product flags only. Do not set HOME / XDG_* / OPENCODE_CONFIG_CONTENT.
     GH_TOKEN: mintedInstallationToken,
   },
 });
 
-for await (const event of bay.run("Read the briefing and set today's goals.")) {
+for await (const event of bay.run("Read the briefing and set today's goals.", {
+  timeoutMs: 120_000,
+})) {
   // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "turn" | "session" | "diagnostic" | "error" | "exit"
+  // exit.reason: "ok" | "error" | "abort" | "timeout" (timeout uses code 124)
 }
 
 await bay.close();
@@ -74,7 +77,7 @@ Classification uses each engine's own error shape first:
 
 Auth failures, a missing binary, and `abort()` are **critical**; everything else is worth one more process start. A CLI that exits 0 is never resumed, even if the stream carried an error event.
 
-Set `recoveryAttempts: 0` on `openBay` to disable restart; it must be a non-negative integer. `recoveryBackoffMs` (default 250) delays each resume, multiplied by the attempt number. Cancelling the `run()` iterator kills the child, escalating to SIGKILL if the CLI ignores SIGTERM.
+Set `recoveryAttempts: 0` on `openBay` to disable restart; it must be a non-negative integer. `recoveryBackoffMs` (default 250) delays each resume, multiplied by the attempt number. `run(prompt, { timeoutMs })` kills the child the same way as `abort()` and ends with `exit.reason: "timeout"` and `code: 124`. Cancelling the `run()` iterator kills the child, escalating to SIGKILL if the CLI ignores SIGTERM.
 
 ## Interactive CLI
 

@@ -20,13 +20,18 @@ export type {
   BayError,
   BayEvent,
   DoctorReport,
+  EngineConfig,
   EngineId,
+  ExitReason,
   IsolationKind,
   McpStdio,
   OpenBayOptions,
+  RunOptions,
 } from "./types.js";
 export type {
   LaunchEngineId,
   LaunchEngineOptions,
 } from "./launch.js";
+export type { SpawnAdapter, SpawnedRun, SpawnRequest } from "./spawn.js";
 export { ENGINE_IDS, ISOLATION_KINDS, isEngineId } from "./types.js";
+export { applySpawnAdapter, spawnLineProcess } from "./spawn.js";

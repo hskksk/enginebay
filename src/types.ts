@@ -1,3 +1,4 @@
+import type { SpawnAdapter } from "./spawn.js";
 import type { PreparedWorkspace } from "./workspace.js";
 
 export const ENGINE_IDS = ["opencode", "claude-code", "cursor-agent"] as const;
@@ -12,6 +13,19 @@ export type McpStdio = {
   env: Record<string, string>;
   /** MCP server name inside the engine. Default: "enginebay". */
   name?: string;
+};
+
+/** OpenCode config merge. `mcp` / `instructions` stay owned by enginebay. */
+export type EngineConfig = {
+  plugins?: string[];
+  extra?: Record<string, unknown>;
+};
+
+export type ExitReason = "ok" | "error" | "abort" | "timeout";
+
+export type RunOptions = {
+  /** Kill the child after this many ms. Last event: reason timeout, code 124. */
+  timeoutMs?: number;
 };
 
 export type OpenBayOptions = {
@@ -30,12 +44,33 @@ export type OpenBayOptions = {
   mcp?: McpStdio;
   /** Inline text. enginebay writes a temp file if the engine only accepts paths. */
   instructions?: string;
-  /** Merged last. Use for minted GH_TOKEN, model overrides, etc. */
+  /**
+   * Product temp vars (minted GH_TOKEN, harness flags). Isolation, auth, and
+   * OpenCode config are first-class options — do not set HOME / XDG_* here.
+   */
   extraEnv?: Record<string, string>;
   /** Override host process.env / homedir in tests. */
   hostEnv?: NodeJS.ProcessEnv;
   hostHome?: string;
   model?: string;
+  /** OpenCode `--agent`. Other engines ignore this for now. */
+  agent?: string;
+  /** OpenCode plugin / extra config merged with session MCP. */
+  config?: EngineConfig;
+  /**
+   * OpenCode `XDG_DATA_HOME`. Omit for a temp dir deleted on `close()`.
+   * When set, `close()` keeps it so sessions can be resumed later.
+   */
+  dataDir?: string;
+  /**
+   * Delete engine session DB files (`opencode.db*`) in `dataDir` while
+   * keeping auth links. Default false.
+   */
+  resetSession?: boolean;
+  /** Override the host auth directory used for allowlisted attach. */
+  auth?: { sourceDir?: string };
+  /** Wrap or remap the child spawn (e.g. container exec). */
+  spawn?: SpawnAdapter;
   git?: { committerName?: string };
   /**
    * Extra CLI process starts after a non-critical failure. Default 2.
@@ -72,7 +107,13 @@ export type BayEvent =
   | { kind: "error"; message: string; critical: boolean }
   | { kind: "turn"; reason: string; sessionId?: string; messageId?: string }
   | { kind: "session"; phase: "created" | "idle"; sessionId: string }
-  | { kind: "exit"; code: number; sessionId?: string; error?: BayError };
+  | {
+      kind: "exit";
+      code: number;
+      reason?: ExitReason;
+      sessionId?: string;
+      error?: BayError;
+    };
 
 export type DoctorReport = {
   ok: boolean;
@@ -88,7 +129,7 @@ export interface Bay {
   readonly workspace: PreparedWorkspace;
   /** Latest session id observed on this bay, if the engine emitted one. */
   readonly sessionId: string | undefined;
-  run(prompt: string): AsyncIterable<BayEvent>;
+  run(prompt: string, opts?: RunOptions): AsyncIterable<BayEvent>;
   /** Replace extraEnv (and rewrite isolated gitconfig if a token is present). */
   updateExtraEnv(
     extraEnv: Record<string, string>,

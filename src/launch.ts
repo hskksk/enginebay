@@ -21,6 +21,7 @@ import {
   resolveCursorCommand,
 } from "./cursor.js";
 import {
+  assertProductExtraEnv,
   buildChildEnv,
   extraEnvGitToken,
   extraEnvHasGitToken,
@@ -29,11 +30,14 @@ import {
 import { writeIsolatedGitconfig } from "./gitconfig.js";
 import {
   attachOpencodeAuth,
-  buildOpencodeMcpConfig,
+  buildOpencodeConfigContent,
+  buildOpencodeLaunchArgs,
   hostOpencodeShareDir,
   OPENCODE_COMMAND,
+  resetOpencodeSession,
+  argsHaveFlag,
 } from "./opencode.js";
-import type { IsolationKind, McpStdio } from "./types.js";
+import type { EngineConfig, IsolationKind, McpStdio } from "./types.js";
 import { prepareWorkspace } from "./workspace.js";
 
 export const LAUNCH_ENGINE_IDS = [
@@ -59,7 +63,24 @@ export type LaunchEngineOptions = {
   instructions?: string;
   /** Engine model override. */
   model?: string;
-  /** Merged last. Host GitHub tokens are otherwise stripped. */
+  /** OpenCode `--agent`. Other engines ignore this for now. */
+  agent?: string;
+  /** OpenCode plugin / extra config merged with session MCP. */
+  config?: EngineConfig;
+  /**
+   * OpenCode `XDG_DATA_HOME`. Omit for a temp dir deleted after launch.
+   * When set, the directory survives so sessions can be resumed later.
+   */
+  dataDir?: string;
+  /** Delete engine session DB files while keeping auth links. */
+  resetSession?: boolean;
+  /** Override the host auth directory used for allowlisted attach. */
+  auth?: { sourceDir?: string };
+  /** Resume this OpenCode session. Exclusive with `continueLast`. */
+  sessionId?: string;
+  /** OpenCode `--continue`. Exclusive with `sessionId`. */
+  continueLast?: boolean;
+  /** Merged after host env strip; isolation overrides still win. */
   extraEnv?: Record<string, string>;
   git?: { committerName?: string };
   /** Override host process.env / home in tests. */
@@ -95,8 +116,9 @@ export function isLaunchEngineId(value: string): value is LaunchEngineId {
 
 /**
  * Launch an engine in a disposable bay while keeping its terminal interactive.
- * The engine's argv is forwarded verbatim; enginebay only adds isolation
- * through environment variables and engine-specific config.
+ * Isolation is applied through environment variables and engine-specific config.
+ * OpenCode defaults to `run --interactive --dir`; a full subcommand in `args`
+ * is still forwarded as-is.
  */
 export async function launchEngine(
   options: LaunchEngineOptions,
@@ -123,6 +145,9 @@ async function prepareLaunch(
   if (options.workDir !== undefined && options.workspaceId !== undefined) {
     throw new Error("enginebay: set either workDir or workspaceId, not both");
   }
+  assertProductExtraEnv(options.extraEnv, {
+    rejectConfigContent: options.dataDir !== undefined,
+  });
   const hostEnv = options.hostEnv ?? process.env;
   const hostHome = resolveHostHome(hostEnv, options.hostHome);
   const cwd =
@@ -190,7 +215,8 @@ async function prepareLaunch(
       const xdgConfig = join(runtimeDir, "config");
       const xdgState = join(runtimeDir, "state");
       const xdgCache = join(runtimeDir, "cache");
-      const xdgData = join(runtimeDir, "share");
+      const xdgData =
+        options.dataDir ?? join(runtimeDir, "share");
       await Promise.all(
         [isolatedHome, xdgConfig, xdgState, xdgCache, xdgData].map((path) =>
           mkdir(path, { recursive: true }),
@@ -202,12 +228,24 @@ async function prepareLaunch(
         await writeFile(instructionsPath, options.instructions, "utf8");
       }
       await attachOpencodeAuth({
-        hostShareDir: hostOpencodeShareDir(hostHome),
+        hostShareDir: options.auth?.sourceDir ?? hostOpencodeShareDir(hostHome),
         isolatedShareDir: xdgData,
       });
+      if (options.resetSession) {
+        await resetOpencodeSession(xdgData);
+      }
       return {
-        ...common,
         command: OPENCODE_COMMAND,
+        args: buildOpencodeLaunchArgs({
+          workDir: cwd,
+          model: options.model,
+          agent: options.agent,
+          sessionId: options.sessionId,
+          continueLast: options.continueLast,
+          args: options.args ?? [],
+        }),
+        cwd,
+        cleanup: () => rm(runtimeDir, RM_OPTS),
         env: buildChildEnv({
           hostEnv,
           extraEnv,
@@ -220,9 +258,12 @@ async function prepareLaunch(
             XDG_CONFIG_DIRS: "",
             OPENCODE_DISABLE_GLOBAL_CONFIG: "1",
             OPENCODE_DISABLE_CLAUDE_CODE: "1",
-            OPENCODE_CONFIG_CONTENT: JSON.stringify(
-              buildOpencodeMcpConfig({ mcp: options.mcp, instructionsPath }),
-            ),
+            OPENCODE_CONFIG_CONTENT: buildOpencodeConfigContent({
+              mcp: options.mcp,
+              instructionsPath,
+              config: options.config,
+              extraEnv,
+            }),
             GIT_CONFIG_GLOBAL: hasGitToken ? gitconfigPath : "/dev/null",
           },
         }),
@@ -309,7 +350,10 @@ async function prepareLaunch(
 }
 
 function withModel(args: string[], model: string | undefined): string[] {
-  return model && model.length > 0 ? ["--model", model, ...args] : [...args];
+  if (!model || model.length === 0 || argsHaveFlag(args, "--model")) {
+    return [...args];
+  }
+  return ["--model", model, ...args];
 }
 
 async function runInteractive(prepared: PreparedLaunch): Promise<number> {

@@ -30,9 +30,10 @@ async function tempDir(prefix: string): Promise<string> {
 async function collectEvents(
   bay: Awaited<ReturnType<typeof openBay>>,
   prompt: string,
+  opts?: { timeoutMs?: number },
 ) {
   const events = [];
-  for await (const event of bay.run(prompt)) {
+  for await (const event of bay.run(prompt, opts)) {
     events.push(event);
   }
   return events;
@@ -115,7 +116,7 @@ describe("openBay OpenCode isolation", () => {
     const events = await collectEvents(bay, "read the briefing");
     expect(events.map((event) => event.kind)).toEqual(["text", "exit"]);
     expect(events[0]).toEqual({ kind: "text", text: "ok" });
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0, reason: "ok" });
 
     const argv = JSON.parse(
       await readFile(join(dumpDir, "argv.json"), "utf8"),
@@ -234,7 +235,7 @@ describe("openBay OpenCode isolation", () => {
     });
     const events = await collectEvents(bay, "go");
     await bay.close();
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0, reason: "ok" });
   });
 
   it("sets Bay.sessionId from session.created and maps step_finish to turn", async () => {
@@ -283,7 +284,7 @@ describe("openBay OpenCode isolation", () => {
         sessionId: "ses_created",
         messageId: "msg_1",
       },
-      { kind: "exit", code: 0, sessionId: "ses_created" },
+      { kind: "exit", code: 0, reason: "ok", sessionId: "ses_created" },
     ]);
     expect(bay.sessionId).toBe("ses_created");
     await bay.close();
@@ -347,6 +348,7 @@ describe("openBay process error recovery", () => {
     expect(events[3]).toEqual({
       kind: "exit",
       code: 0,
+      reason: "ok",
       sessionId: "ses_recover",
     });
 
@@ -404,6 +406,7 @@ describe("openBay process error recovery", () => {
     expect(events.at(-1)).toEqual({
       kind: "exit",
       code: 1,
+      reason: "error",
       error: {
         message: "enginebay: Authentication required",
         critical: true,
@@ -649,7 +652,7 @@ describe("openBay process error recovery", () => {
     const firstEvents = await firstEventsPromise;
     await waitUntilDead(firstPid);
 
-    expect(secondEvents.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(secondEvents.at(-1)).toEqual({ kind: "exit", code: 0, reason: "ok" });
     expect(firstEvents.find((event) => event.kind === "error")).toMatchObject({
       kind: "error",
       critical: true,
@@ -697,6 +700,7 @@ describe("openBay process error recovery", () => {
     expect(events.at(-1)).toEqual({
       kind: "exit",
       code: 0,
+      reason: "ok",
       sessionId: "sess-3",
     });
   });
@@ -942,7 +946,7 @@ describe("openBay Claude Code isolation", () => {
     const events = await collectEvents(bay, "read the briefing");
     expect(events.map((event) => event.kind)).toEqual(["text", "exit"]);
     expect(events[0]).toEqual({ kind: "text", text: "ok" });
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0, reason: "ok" });
 
     const argv = JSON.parse(
       await readFile(join(dumpDir, "argv.json"), "utf8"),
@@ -1044,7 +1048,7 @@ describe("openBay Cursor Agent isolation", () => {
     const events = await collectEvents(bay, "read the briefing");
     expect(events.map((event) => event.kind)).toEqual(["text", "exit"]);
     expect(events[0]).toEqual({ kind: "text", text: "ok" });
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({ kind: "exit", code: 0, reason: "ok" });
 
     const argv = JSON.parse(
       await readFile(join(dumpDir, "argv.json"), "utf8"),
@@ -1151,6 +1155,223 @@ describe("openBay workspaces", () => {
   });
 });
 
+describe("openBay dataDir auth timeout and spawn adapter", () => {
+  it("uses consumer dataDir as XDG_DATA_HOME and keeps it after close", async () => {
+    const hostHome = await tempDir("enginebay-datadir-host-");
+    const workDir = await tempDir("enginebay-datadir-work-");
+    const dataDir = await tempDir("enginebay-datadir-data-");
+    const binDir = await tempDir("enginebay-datadir-bin-");
+    const dumpDir = await tempDir("enginebay-datadir-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      dataDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: { ENGINEBAY_DUMP_DIR: dumpDir },
+      recoveryAttempts: 0,
+    });
+    await collectEvents(bay, "go");
+    const dumped = JSON.parse(
+      await readFile(join(dumpDir, "env.json"), "utf8"),
+    ) as { XDG_DATA_HOME: string };
+    expect(dumped.XDG_DATA_HOME).toBe(dataDir);
+    await bay.close();
+    expect(existsSync(dataDir)).toBe(true);
+  });
+
+  it("deletes opencode.db files when resetSession is set", async () => {
+    const hostHome = await tempDir("enginebay-reset-host-");
+    const workDir = await tempDir("enginebay-reset-work-");
+    const dataDir = await tempDir("enginebay-reset-data-");
+    const binDir = await tempDir("enginebay-reset-bin-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+    const engineDir = join(dataDir, "opencode");
+    await mkdir(engineDir, { recursive: true });
+    await writeFile(join(engineDir, "opencode.db"), "db\n", "utf8");
+    await writeFile(join(engineDir, "opencode.db-wal"), "wal\n", "utf8");
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      dataDir,
+      resetSession: true,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      recoveryAttempts: 0,
+    });
+    expect(existsSync(join(engineDir, "opencode.db"))).toBe(false);
+    expect(existsSync(join(engineDir, "opencode.db-wal"))).toBe(false);
+    expect(existsSync(join(engineDir, "auth.json"))).toBe(true);
+    await bay.close();
+    expect(existsSync(dataDir)).toBe(true);
+  });
+
+  it("passes --agent and keeps mcp when plugins are set", async () => {
+    const hostHome = await tempDir("enginebay-agent-host-");
+    const workDir = await tempDir("enginebay-agent-work-");
+    const binDir = await tempDir("enginebay-agent-bin-");
+    const dumpDir = await tempDir("enginebay-agent-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      agent: "eval",
+      config: { plugins: ["opencode-gemini-auth@latest"] },
+      mcp: {
+        command: process.execPath,
+        args: ["/tmp/mcp.js"],
+        env: {},
+        name: "board-mcp",
+      },
+      extraEnv: { ENGINEBAY_DUMP_DIR: dumpDir },
+      recoveryAttempts: 0,
+    });
+    await collectEvents(bay, "go");
+    await bay.close();
+    const argv = JSON.parse(
+      await readFile(join(dumpDir, "argv.json"), "utf8"),
+    ) as string[];
+    expect(argv[argv.indexOf("--agent") + 1]).toBe("eval");
+    const dumped = JSON.parse(
+      await readFile(join(dumpDir, "env.json"), "utf8"),
+    ) as { OPENCODE_CONFIG_CONTENT: string };
+    const config = JSON.parse(dumped.OPENCODE_CONFIG_CONTENT) as {
+      mcp: Record<string, unknown>;
+      plugin: string[];
+    };
+    expect(config.mcp["board-mcp"]).toBeDefined();
+    expect(config.plugin).toEqual(["opencode-gemini-auth@latest"]);
+  });
+
+  it("rejects extraEnv isolation keys when dataDir is set", async () => {
+    const hostHome = await tempDir("enginebay-datadir-reject-host-");
+    const workDir = await tempDir("enginebay-datadir-reject-work-");
+    const dataDir = await tempDir("enginebay-datadir-reject-data-");
+    await expect(
+      openBay({
+        engine: "opencode",
+        workDir,
+        dataDir,
+        hostHome,
+        hostEnv: { HOME: hostHome, PATH: process.env.PATH },
+        extraEnv: { XDG_DATA_HOME: "/tmp/hijack" },
+      }),
+    ).rejects.toThrow(/extraEnv must not set XDG_DATA_HOME/);
+  });
+
+  it("attaches only allowlisted auth files from auth.sourceDir", async () => {
+    const hostHome = await tempDir("enginebay-authsrc-host-");
+    const workDir = await tempDir("enginebay-authsrc-work-");
+    const dataDir = await tempDir("enginebay-authsrc-data-");
+    const sourceDir = await tempDir("enginebay-authsrc-source-");
+    const binDir = await tempDir("enginebay-authsrc-bin-");
+    const dumpDir = await tempDir("enginebay-authsrc-dump-");
+    await installFakeOpencode(binDir);
+    await writeFile(join(sourceDir, "auth.json"), '{"ok":true}\n', "utf8");
+    await writeFile(join(sourceDir, "secret.txt"), "nope\n", "utf8");
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      dataDir,
+      auth: { sourceDir },
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: { ENGINEBAY_DUMP_DIR: dumpDir },
+      recoveryAttempts: 0,
+    });
+    await collectEvents(bay, "go");
+    const dumped = JSON.parse(
+      await readFile(join(dumpDir, "env.json"), "utf8"),
+    ) as { isolatedShareFiles: string[] };
+    expect(dumped.isolatedShareFiles).toEqual(
+      expect.arrayContaining(["auth.json"]),
+    );
+    expect(dumped.isolatedShareFiles).not.toContain("secret.txt");
+    expect(existsSync(join(dataDir, "opencode", "auth.json"))).toBe(true);
+    expect(existsSync(join(dataDir, "opencode", "secret.txt"))).toBe(false);
+    await bay.close();
+  });
+
+  it("maps --dir and XDG_DATA_HOME and kills on timeout via spawn adapter", async () => {
+    const hostHome = await tempDir("enginebay-spawn-host-");
+    const workDir = await tempDir("enginebay-spawn-work-");
+    const dataDir = await tempDir("enginebay-spawn-data-");
+    const mappedWork = join(workDir, "mapped");
+    const mappedData = join(dataDir, "mapped");
+    await mkdir(mappedWork, { recursive: true });
+    await mkdir(mappedData, { recursive: true });
+    const binDir = await tempDir("enginebay-spawn-bin-");
+    const dumpDir = await tempDir("enginebay-spawn-dump-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      dataDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_DUMP_DIR: dumpDir,
+        ENGINEBAY_FAKE_HANG: "1",
+      },
+      recoveryAttempts: 0,
+      spawn: {
+        mapPath: (path) => {
+          if (path === workDir) {
+            return mappedWork;
+          }
+          if (path === dataDir) {
+            return mappedData;
+          }
+          return path;
+        },
+      },
+    });
+
+    const events = await collectEvents(bay, "go", { timeoutMs: 80 });
+    await bay.close();
+    expect(events.at(-1)).toMatchObject({
+      kind: "exit",
+      code: 124,
+      reason: "timeout",
+    });
+    const argv = JSON.parse(
+      await readFile(join(dumpDir, "argv.json"), "utf8"),
+    ) as string[];
+    expect(argv[argv.indexOf("--dir") + 1]).toBe(mappedWork);
+    const dumped = JSON.parse(
+      await readFile(join(dumpDir, "env.json"), "utf8"),
+    ) as { XDG_DATA_HOME: string };
+    expect(dumped.XDG_DATA_HOME).toBe(mappedData);
+  });
+});
+
 describe("openBay guards", () => {
   it("rejects unimplemented isolation backends", async () => {
     await expect(
@@ -1214,6 +1435,21 @@ describe("doctor", () => {
     expect(report.cli.version).toBe("1.0.0-fake");
     expect(report.auth.found).toBe(true);
     expect(report.message).toMatch(/auth files present/);
+  });
+
+  it("uses authSourceDir instead of the host OpenCode share", async () => {
+    const hostHome = await tempDir("enginebay-doc-authsrc-host-");
+    const sourceDir = await tempDir("enginebay-doc-authsrc-");
+    const binDir = await tempDir("enginebay-doc-authsrc-bin-");
+    await installFakeOpencode(binDir);
+    await writeFile(join(sourceDir, "auth.json"), '{"ok":true}\n', "utf8");
+    const report = await doctor("opencode", {
+      env: withFakePath(binDir, { HOME: hostHome, PATH: process.env.PATH }),
+      home: hostHome,
+      authSourceDir: sourceDir,
+    });
+    expect(report.auth.found).toBe(true);
+    expect(report.auth.detail).toContain(sourceDir);
   });
 
   it("finds a fake claude CLI and host credentials file", async () => {

@@ -88,6 +88,7 @@ export type ProcessFailureInput = {
   engineResultSubtype?: string;
   engineRetryable?: boolean;
   aborted: boolean;
+  stopKind?: "abort" | "timeout";
 };
 
 function failureMessage(input: ProcessFailureInput): string {
@@ -123,6 +124,9 @@ function failureMessage(input: ProcessFailureInput): string {
  */
 export function classifyProcessFailure(input: ProcessFailureInput): BayError {
   if (input.aborted) {
+    if (input.stopKind === "timeout") {
+      return { message: "enginebay: run timed out", critical: true };
+    }
     return { message: "enginebay: run aborted", critical: true };
   }
 

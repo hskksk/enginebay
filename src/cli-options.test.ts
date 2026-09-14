@@ -60,6 +60,36 @@ describe("parseCliOptions", () => {
     });
   });
 
+  it("maps agent data-dir plugin session and continue", async () => {
+    await expect(
+      parseCliOptions([
+        "--agent",
+        "eval",
+        "--data-dir",
+        "/tmp/data",
+        "--auth-source-dir",
+        "/tmp/auth",
+        "--plugin",
+        "opencode-gemini-auth@latest",
+        "--session",
+        "ses_1",
+        "--",
+        "--verbose",
+      ]),
+    ).resolves.toEqual({
+      help: false,
+      args: ["--verbose"],
+      agent: "eval",
+      dataDir: "/tmp/data",
+      auth: { sourceDir: "/tmp/auth" },
+      config: { plugins: ["opencode-gemini-auth@latest"] },
+      sessionId: "ses_1",
+    });
+    await expect(
+      parseCliOptions(["--session", "ses_1", "--continue"]),
+    ).rejects.toThrow(/--session or --continue/);
+  });
+
   it("reads instructions from a file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "enginebay-cli-options-"));
     try {
