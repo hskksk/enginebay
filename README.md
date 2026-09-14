@@ -188,7 +188,13 @@ npm install enginebay
 pnpm add enginebay
 ```
 
-Requires Node.js 22+.
+Git installs (tag or SHA) run `prepare` so `dist/` is built; `dist/` is not committed. Requires Node.js 22+ and a TypeScript toolchain from this package's devDependencies:
+
+```bash
+npm install github:hskksk/enginebay#v1.3.0
+```
+
+npm publishes the built `dist/` without a local compile. A GitHub tag may be ahead of the last **approved** npm stage (see Publish).
 
 ## Development
 
