@@ -21,6 +21,78 @@ export type SpawnedRun = {
   kill: (signal?: NodeJS.Signals) => Promise<void>;
 };
 
+export type SpawnRequest = {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+};
+
+export type SpawnAdapter = {
+  spawn?: (req: SpawnRequest) => SpawnedRun;
+  mapPath?: (hostPath: string) => string;
+  mapEnv?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
+
+const PATH_FLAGS = new Set(["--dir", "--workspace", "--mcp-config"]);
+
+const PATH_ENV_KEYS = new Set([
+  "HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "GIT_CONFIG_GLOBAL",
+  "CLAUDE_CONFIG_DIR",
+  "CURSOR_CONFIG_DIR",
+  "CODEX_HOME",
+]);
+
+function mapPathFlags(
+  args: string[],
+  mapPath: (hostPath: string) => string,
+): string[] {
+  const mapped = [...args];
+  for (let index = 0; index < mapped.length - 1; index += 1) {
+    if (PATH_FLAGS.has(mapped[index]!)) {
+      mapped[index + 1] = mapPath(mapped[index + 1]!);
+    }
+  }
+  return mapped;
+}
+
+function mapPathEnv(
+  env: NodeJS.ProcessEnv,
+  mapPath: (hostPath: string) => string,
+): NodeJS.ProcessEnv {
+  const mapped: NodeJS.ProcessEnv = { ...env };
+  for (const key of PATH_ENV_KEYS) {
+    const value = mapped[key];
+    if (typeof value === "string" && value.length > 0 && value !== "/dev/null") {
+      mapped[key] = mapPath(value);
+    }
+  }
+  return mapped;
+}
+
+export function applySpawnAdapter(
+  adapter: SpawnAdapter | undefined,
+  req: SpawnRequest,
+): SpawnedRun {
+  const mapPath = adapter?.mapPath;
+  let { args, cwd, env } = req;
+  if (mapPath) {
+    args = mapPathFlags(args, mapPath);
+    cwd = mapPath(cwd);
+    env = mapPathEnv(env, mapPath);
+  }
+  if (adapter?.mapEnv) {
+    env = adapter.mapEnv(env);
+  }
+  const spawnFn = adapter?.spawn ?? spawnLineProcess;
+  return spawnFn({ command: req.command, args, cwd, env });
+}
+
 export function spawnLineProcess(options: {
   command: string;
   args: string[];

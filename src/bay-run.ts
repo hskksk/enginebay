@@ -7,10 +7,20 @@ import {
 } from "./process-error.js";
 import type { RunInsight } from "./run-insight.js";
 import type { SpawnedRun } from "./spawn.js";
-import type { BayError, BayEvent } from "./types.js";
+import type { BayError, BayEvent, ExitReason } from "./types.js";
 
 /** Slice length for a backoff wait, so abort() takes effect without waiting it out. */
 const BACKOFF_SLICE_MS = 50;
+
+export function resolveTimeoutMs(value: number | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("enginebay: timeoutMs must be a positive number");
+  }
+  return value;
+}
 
 type RunningChild = {
   seq: number;
@@ -26,8 +36,11 @@ export class BayProcessControl {
   closed = false;
   /** Latest engine session id observed during a run on this bay. */
   sessionId: string | undefined;
+  /** Why the current run was stopped, if it did not finish on its own. */
+  stopKind: "abort" | "timeout" | undefined;
 
-  abort(): Promise<void> {
+  abort(kind: "abort" | "timeout" = "abort"): Promise<void> {
+    this.stopKind ??= kind;
     this.seq += 1;
     return this.stopRunning();
   }
@@ -38,6 +51,7 @@ export class BayProcessControl {
   }> {
     const seq = ++this.seq;
     await this.stopRunning();
+    this.stopKind = undefined;
     return {
       isStopped: () => this.closed || this.seq !== seq,
       setRunning: (run) => {
@@ -82,13 +96,17 @@ type RecoverableRunInput = {
   isStopped: () => boolean;
   recoveryAttempts?: number;
   recoveryBackoffMs?: number;
+  timeoutMs?: number;
   sessionSink?: { sessionId?: string };
+  stopKind?: () => "abort" | "timeout" | undefined;
+  markAbort?: () => void;
 };
 
 export function startBayRun(
   control: BayProcessControl,
-  input: Omit<RecoverableRunInput, "isStopped" | "setRunning">,
+  input: Omit<RecoverableRunInput, "isStopped" | "setRunning" | "stopKind" | "markAbort">,
 ): AsyncIterable<BayEvent> {
+  resolveTimeoutMs(input.timeoutMs);
   let inner: Promise<AsyncIterator<BayEvent>> | undefined;
   const start = (): Promise<AsyncIterator<BayEvent>> => {
     inner ??= (async () => {
@@ -96,14 +114,52 @@ export function startBayRun(
         throw new Error("enginebay: bay is closed");
       }
       const { isStopped, setRunning } = await control.beginRun();
-      return iterateRecoverableRun({
+      const timeoutMs = resolveTimeoutMs(input.timeoutMs);
+      let timer: NodeJS.Timeout | undefined;
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          void control.abort("timeout");
+        }, timeoutMs);
+        timer.unref();
+      }
+      const iterator = iterateRecoverableRun({
         ...input,
         isStopped,
         setRunning,
         sessionSink: control,
-      })[
-        Symbol.asyncIterator
-      ]();
+        stopKind: () => control.stopKind,
+        markAbort: () => {
+          control.stopKind ??= "abort";
+        },
+      })[Symbol.asyncIterator]();
+      const clear = (): void => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+      };
+      return {
+        async next() {
+          const step = await iterator.next();
+          if (step.done) {
+            clear();
+          }
+          return step;
+        },
+        async return(value?: unknown) {
+          clear();
+          return iterator.return
+            ? iterator.return(value)
+            : { done: true, value: undefined };
+        },
+        async throw(error: unknown) {
+          clear();
+          if (!iterator.throw) {
+            throw error;
+          }
+          return iterator.throw(error);
+        },
+      };
     })();
     return inner;
   };
@@ -179,6 +235,7 @@ export function iterateRecoverableRun(
 
       const stop = async (): Promise<void> => {
         cancelled = true;
+        input.markAbort?.();
         wakeBackoff?.();
         await current?.kill("SIGTERM");
       };
@@ -213,14 +270,23 @@ function noteSession(
 function exitEvent(
   code: number,
   sessionId: string | undefined,
+  reason: ExitReason,
   error?: BayError,
 ): BayEvent {
   return {
     kind: "exit",
     code,
+    reason,
     ...(sessionId ? { sessionId } : {}),
     ...(error ? { error } : {}),
   };
+}
+
+function failureStopKind(
+  input: RecoverableRunInput,
+  stopped: boolean,
+): "abort" | "timeout" | undefined {
+  return input.stopKind?.() ?? (stopped ? "abort" : undefined);
 }
 
 async function* recoverLoop(
@@ -231,14 +297,21 @@ async function* recoverLoop(
   let sessionId: string | undefined;
   let lastError: BayError | undefined;
   let lastCode = 1;
+  let lastReason: ExitReason = "error";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (input.isStopped()) {
+      const stopKind = failureStopKind(input, true);
       lastError = classifyProcessFailure({
         code: lastCode,
         stderr: "",
         aborted: true,
+        stopKind,
       });
+      lastReason = stopKind === "timeout" ? "timeout" : "abort";
+      if (stopKind === "timeout") {
+        lastCode = 124;
+      }
       break;
     }
     const parseLine = input.createParser();
@@ -266,10 +339,11 @@ async function* recoverLoop(
       }
       lastCode = finished.code;
       const stopped = input.isStopped();
+      const stopKind = failureStopKind(input, stopped);
       const processFailed = finished.code !== 0 || Boolean(finished.spawnError);
       const engineFailed = Boolean(insight.engineErrorMessage);
       if (!processFailed && !engineFailed && !stopped) {
-        yield exitEvent(0, sessionId);
+        yield exitEvent(0, sessionId, "ok");
         return;
       }
       lastError = classifyProcessFailure({
@@ -282,7 +356,17 @@ async function* recoverLoop(
         engineResultSubtype: insight.engineResultSubtype,
         engineRetryable: insight.engineRetryable,
         aborted: stopped,
+        stopKind,
       });
+      lastReason =
+        stopKind === "timeout"
+          ? "timeout"
+          : stopKind === "abort" || stopped
+            ? "abort"
+            : "error";
+      if (stopKind === "timeout") {
+        lastCode = 124;
+      }
       const canRetry =
         !lastError.critical &&
         attempt < maxAttempts &&
@@ -304,11 +388,17 @@ async function* recoverLoop(
         });
         await input.backoff(backoffMs * attempt);
         if (input.isStopped()) {
+          const retryStop = failureStopKind(input, true);
           lastError = classifyProcessFailure({
             code: lastCode,
             stderr: "",
             aborted: true,
+            stopKind: retryStop,
           });
+          lastReason = retryStop === "timeout" ? "timeout" : "abort";
+          if (retryStop === "timeout") {
+            lastCode = 124;
+          }
           break;
         }
         continue;
@@ -326,8 +416,10 @@ async function* recoverLoop(
       message: lastError.message,
       critical: lastError.critical,
     });
-    yield redactBayEvent(exitEvent(lastCode || 1, sessionId, lastError));
+    yield redactBayEvent(
+      exitEvent(lastCode || 1, sessionId, lastReason, lastError),
+    );
     return;
   }
-  yield exitEvent(lastCode || 1, sessionId);
+  yield exitEvent(lastCode || 1, sessionId, lastReason);
 }

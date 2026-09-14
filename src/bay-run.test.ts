@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BayProcessControl, iterateRecoverableRun } from "./bay-run.js";
+import { BayProcessControl, iterateRecoverableRun, startBayRun } from "./bay-run.js";
 import type { SpawnWaitResult, SpawnedRun } from "./spawn.js";
 import type { BayEvent } from "./types.js";
 
@@ -113,6 +113,7 @@ describe("iterateRecoverableRun", () => {
     expect(events.at(-1)).toEqual({
       kind: "exit",
       code: 0,
+      reason: "ok",
       sessionId: "ses_public",
     });
   });
@@ -252,6 +253,7 @@ describe("iterateRecoverableRun", () => {
     expect(events.at(-1)).toEqual({
       kind: "exit",
       code: 0,
+      reason: "ok",
       sessionId: "ses_3",
     });
   });
@@ -378,5 +380,35 @@ describe("BayProcessControl", () => {
     releaseKill();
     await Promise.all([firstAbort, secondAbort]);
     expect(killed).toBe(true);
+  });
+});
+
+describe("startBayRun timeout", () => {
+  it("ends with reason timeout and code 124 after signaling the child", async () => {
+    const control = new BayProcessControl();
+    const state = { killed: false };
+    const events = await collect(
+      startBayRun(control, {
+        recoveryAttempts: 0,
+        timeoutMs: 20,
+        createParser: noParser,
+        spawn: () => hangingRun(state),
+      }),
+    );
+    expect(state.killed).toBe(true);
+    expect(events.find((event) => event.kind === "error")).toEqual({
+      kind: "error",
+      message: "enginebay: run timed out",
+      critical: true,
+    });
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 124,
+      reason: "timeout",
+      error: {
+        message: "enginebay: run timed out",
+        critical: true,
+      },
+    });
   });
 });

@@ -45,6 +45,12 @@ const ENGINE_HELP = `Enginebay options:
   --workspace-id <id>           Use a named persistent workspace
   --isolation <env>             Select isolation backend (currently env)
   --model <model>               Select the engine model
+  --agent <agent>               OpenCode primary agent
+  --data-dir <path>             Persistent OpenCode XDG_DATA_HOME
+  --auth-source-dir <path>      Auth directory to attach (allowlisted files)
+  --plugin <name>               OpenCode config plugin (repeatable)
+  --session <id>                Resume this OpenCode session
+  --continue                    Continue the last OpenCode session
   --instructions <text>         Add engine-level instructions
   --instructions-file <path>    Read engine-level instructions from a file
   --mcp-command <command>       Inject a session-scoped stdio MCP server

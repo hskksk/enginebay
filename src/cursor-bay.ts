@@ -12,6 +12,7 @@ import {
 } from "./cursor.js";
 import { parseCursorLine } from "./cursor-parse.js";
 import {
+  assertProductExtraEnv,
   extraEnvGitToken,
   extraEnvHasGitToken,
   buildChildEnv,
@@ -22,8 +23,14 @@ import {
   resolveRecoveryAttempts,
   resolveRecoveryBackoffMs,
 } from "./process-error.js";
-import { spawnLineProcess } from "./spawn.js";
-import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
+import { applySpawnAdapter, type SpawnAdapter } from "./spawn.js";
+import type {
+  Bay,
+  BayEvent,
+  EngineId,
+  OpenBayOptions,
+  RunOptions,
+} from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 
 const RM_OPTS = {
@@ -50,6 +57,7 @@ class CursorBay implements Bay {
   private committerName: string;
   private readonly instructions: string | undefined;
   private readonly gitconfigPath: string;
+  private readonly spawnAdapter: SpawnAdapter | undefined;
   private readonly recoveryAttempts: number;
   private readonly recoveryBackoffMs: number;
   private readonly control = new BayProcessControl();
@@ -66,6 +74,7 @@ class CursorBay implements Bay {
     committerName: string;
     instructions: string | undefined;
     gitconfigPath: string;
+    spawnAdapter?: SpawnAdapter;
     recoveryAttempts?: number;
     recoveryBackoffMs?: number;
   }) {
@@ -81,6 +90,7 @@ class CursorBay implements Bay {
     this.committerName = input.committerName;
     this.instructions = input.instructions;
     this.gitconfigPath = input.gitconfigPath;
+    this.spawnAdapter = input.spawnAdapter;
     this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
     this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
@@ -93,6 +103,7 @@ class CursorBay implements Bay {
     if (git?.committerName && git.committerName.length > 0) {
       this.committerName = git.committerName;
     }
+    assertProductExtraEnv(this.extraEnv);
     await this.syncGitconfig();
   }
 
@@ -110,16 +121,17 @@ class CursorBay implements Bay {
     await Promise.all(jobs);
   }
 
-  run(prompt: string): AsyncIterable<BayEvent> {
+  run(prompt: string, opts?: RunOptions): AsyncIterable<BayEvent> {
     return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
+      timeoutMs: opts?.timeoutMs,
       createParser: () => {
         const toolById = new Map<string, string>();
         return (line, insight) => parseCursorLine(line, toolById, insight);
       },
       spawn: (resumeSessionId) =>
-        spawnLineProcess({
+        applySpawnAdapter(this.spawnAdapter, {
           command: this.command,
           args: buildCursorArgs({
             prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
@@ -187,6 +199,7 @@ export async function openCursorBay(
   });
   const gitconfigPath = join(isolatedHome, ".gitconfig");
   const extraEnv = options.extraEnv ?? {};
+  assertProductExtraEnv(extraEnv);
   const bay = new CursorBay({
     workspace,
     runtimeDir,
@@ -202,6 +215,7 @@ export async function openCursorBay(
         ? options.instructions
         : undefined,
     gitconfigPath,
+    spawnAdapter: options.spawn,
     recoveryAttempts: options.recoveryAttempts,
     recoveryBackoffMs: options.recoveryBackoffMs,
   });

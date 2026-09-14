@@ -157,7 +157,15 @@ describe("launchEngine", () => {
 
     expect(
       JSON.parse(await readFile(join(dumpDir, "argv.json"), "utf8")),
-    ).toEqual(["--model", "provider/model"]);
+    ).toEqual([
+      "run",
+      "--interactive",
+      "--dir",
+      workDir,
+      "--dangerously-skip-permissions",
+      "--model",
+      "provider/model",
+    ]);
     const env = await dumpedEnv(dumpDir);
     expect(env.HOME).not.toBe(hostHome);
     expect(env.OPENCODE_DISABLE_GLOBAL_CONFIG).toBe("1");
@@ -169,6 +177,61 @@ describe("launchEngine", () => {
       expect.arrayContaining(["auth.json"]),
     );
     expect(existsSync(env.HOME as string)).toBe(false);
+  });
+
+  it("does not duplicate --model and keeps session/continue exclusive", async () => {
+    const hostHome = await tempDir("enginebay-launch-open-flags-host-");
+    const workDir = await tempDir("enginebay-launch-open-flags-work-");
+    const binDir = await tempDir("enginebay-launch-open-flags-bin-");
+    const dumpDir = await tempDir("enginebay-launch-open-flags-dump-");
+    await installFakeCommand(binDir, "opencode");
+    await writeHostOpencodeAuth(hostHome);
+
+    await launchEngine({
+      engine: "opencode",
+      model: "from-option",
+      agent: "eval",
+      sessionId: "ses_1",
+      args: ["--verbose"],
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+        ENGINEBAY_DUMP_DIR: dumpDir,
+      }),
+    });
+
+    expect(
+      JSON.parse(await readFile(join(dumpDir, "argv.json"), "utf8")),
+    ).toEqual([
+      "run",
+      "--interactive",
+      "--dir",
+      workDir,
+      "--dangerously-skip-permissions",
+      "--model",
+      "from-option",
+      "--agent",
+      "eval",
+      "--session",
+      "ses_1",
+      "--verbose",
+    ]);
+
+    await expect(
+      launchEngine({
+        engine: "opencode",
+        sessionId: "ses_1",
+        continueLast: true,
+        workDir,
+        hostHome,
+        hostEnv: withFakePath(binDir, {
+          HOME: hostHome,
+          PATH: process.env.PATH,
+        }),
+      }),
+    ).rejects.toThrow(/sessionId or continueLast/);
   });
 
   it("adds isolated MCP arguments after Claude options", async () => {

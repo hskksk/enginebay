@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { BayProcessControl, startBayRun } from "./bay-run.js";
 import { commandExists, readCommandVersion } from "./command.js";
 import {
+  assertProductExtraEnv,
   buildChildEnv,
   extraEnvGitToken,
   extraEnvHasGitToken,
@@ -13,10 +14,11 @@ import { writeIsolatedGitconfig } from "./gitconfig.js";
 import {
   attachOpencodeAuth,
   buildOpencodeArgs,
-  buildOpencodeMcpConfig,
+  buildOpencodeConfigContent,
   hostOpencodeShareDir,
   OPENCODE_COMMAND,
   opencodeAuthPresent,
+  resetOpencodeSession,
 } from "./opencode.js";
 import { parseOpencodeLine } from "./opencode-parse.js";
 import { openClaudeBay } from "./claude-bay.js";
@@ -32,12 +34,18 @@ import {
   cursorAuthPresent,
 } from "./cursor.js";
 import {
+  RECOVERY_CONTINUE_PROMPT,
   resolveRecoveryAttempts,
   resolveRecoveryBackoffMs,
-  RECOVERY_CONTINUE_PROMPT,
 } from "./process-error.js";
-import { spawnLineProcess } from "./spawn.js";
-import type { Bay, BayEvent, EngineId, OpenBayOptions } from "./types.js";
+import { applySpawnAdapter, type SpawnAdapter } from "./spawn.js";
+import type {
+  Bay,
+  BayEvent,
+  EngineId,
+  OpenBayOptions,
+  RunOptions,
+} from "./types.js";
 import type { PreparedWorkspace } from "./workspace.js";
 import { prepareWorkspace } from "./workspace.js";
 
@@ -56,15 +64,20 @@ class OpencodeBay implements Bay {
     return this.control.sessionId;
   }
   private readonly runtimeDir: string;
-  private readonly dataDir: string;
+  private readonly dataDir: string | undefined;
+  private readonly xdgDataHome: string;
+  private readonly ownsDataDir: boolean;
+  private readonly rejectConfigContent: boolean;
   private readonly hostEnv: NodeJS.ProcessEnv;
   private readonly hostHome: string;
   private readonly model: string | undefined;
+  private readonly agent: string | undefined;
   private extraEnv: Record<string, string>;
   private committerName: string;
   private readonly instructionsPath: string | undefined;
-  private readonly mcpConfig: Record<string, unknown>;
+  private readonly mcpConfig: string;
   private readonly gitconfigPath: string;
+  private readonly spawnAdapter: SpawnAdapter | undefined;
   private readonly recoveryAttempts: number;
   private readonly recoveryBackoffMs: number;
   private readonly control = new BayProcessControl();
@@ -72,15 +85,20 @@ class OpencodeBay implements Bay {
   constructor(input: {
     workspace: PreparedWorkspace;
     runtimeDir: string;
-    dataDir: string;
+    dataDir: string | undefined;
+    xdgDataHome: string;
+    ownsDataDir: boolean;
+    rejectConfigContent: boolean;
     hostEnv: NodeJS.ProcessEnv;
     hostHome: string;
     model: string | undefined;
+    agent: string | undefined;
     extraEnv: Record<string, string>;
     committerName: string;
     instructionsPath: string | undefined;
-    mcpConfig: Record<string, unknown>;
+    mcpConfig: string;
     gitconfigPath: string;
+    spawnAdapter?: SpawnAdapter;
     recoveryAttempts?: number;
     recoveryBackoffMs?: number;
   }) {
@@ -88,14 +106,19 @@ class OpencodeBay implements Bay {
     this.workspace = input.workspace;
     this.runtimeDir = input.runtimeDir;
     this.dataDir = input.dataDir;
+    this.xdgDataHome = input.xdgDataHome;
+    this.ownsDataDir = input.ownsDataDir;
+    this.rejectConfigContent = input.rejectConfigContent;
     this.hostEnv = input.hostEnv;
     this.hostHome = input.hostHome;
     this.model = input.model;
+    this.agent = input.agent;
     this.extraEnv = input.extraEnv;
     this.committerName = input.committerName;
     this.instructionsPath = input.instructionsPath;
     this.mcpConfig = input.mcpConfig;
     this.gitconfigPath = input.gitconfigPath;
+    this.spawnAdapter = input.spawnAdapter;
     this.recoveryAttempts = resolveRecoveryAttempts(input.recoveryAttempts);
     this.recoveryBackoffMs = resolveRecoveryBackoffMs(input.recoveryBackoffMs);
   }
@@ -108,6 +131,9 @@ class OpencodeBay implements Bay {
     if (git?.committerName && git.committerName.length > 0) {
       this.committerName = git.committerName;
     }
+    assertProductExtraEnv(this.extraEnv, {
+      rejectConfigContent: this.rejectConfigContent,
+    });
     await this.syncGitconfig();
   }
 
@@ -118,32 +144,34 @@ class OpencodeBay implements Bay {
   async close(): Promise<void> {
     this.control.closed = true;
     await this.control.abort();
-    const jobs = [
-      rm(this.runtimeDir, RM_OPTS),
-      rm(this.dataDir, RM_OPTS),
-    ];
+    const jobs = [rm(this.runtimeDir, RM_OPTS)];
+    if (this.ownsDataDir && this.dataDir) {
+      jobs.push(rm(this.dataDir, RM_OPTS));
+    }
     if (this.workspace.ephemeral) {
       jobs.push(rm(this.workDir, RM_OPTS));
     }
     await Promise.all(jobs);
   }
 
-  run(prompt: string): AsyncIterable<BayEvent> {
+  run(prompt: string, opts?: RunOptions): AsyncIterable<BayEvent> {
     return startBayRun(this.control, {
       recoveryAttempts: this.recoveryAttempts,
       recoveryBackoffMs: this.recoveryBackoffMs,
+      timeoutMs: opts?.timeoutMs,
       createParser: () => {
         const seenToolCalls = new Set<string>();
         return (line, insight) =>
           parseOpencodeLine(line, seenToolCalls, insight);
       },
       spawn: (resumeSessionId) =>
-        spawnLineProcess({
+        applySpawnAdapter(this.spawnAdapter, {
           command: OPENCODE_COMMAND,
           args: buildOpencodeArgs({
             workDir: this.workDir,
             prompt: resumeSessionId ? RECOVERY_CONTINUE_PROMPT : prompt,
             model: this.model,
+            agent: this.agent,
             sessionId: resumeSessionId,
           }),
           cwd: this.workDir,
@@ -154,9 +182,8 @@ class OpencodeBay implements Bay {
 
   private childEnv(): NodeJS.ProcessEnv {
     const xdgConfig = join(this.runtimeDir, "config");
-    const xdgState = join(this.dataDir, "state");
-    const xdgCache = join(this.dataDir, "cache");
-    const xdgData = join(this.dataDir, "share");
+    const xdgState = join(this.runtimeDir, "state");
+    const xdgCache = join(this.runtimeDir, "cache");
     const isolatedHome = join(this.runtimeDir, "home");
     const hasGit = extraEnvHasGitToken(this.extraEnv);
     return buildChildEnv({
@@ -167,11 +194,11 @@ class OpencodeBay implements Bay {
         XDG_CONFIG_HOME: xdgConfig,
         XDG_STATE_HOME: xdgState,
         XDG_CACHE_HOME: xdgCache,
-        XDG_DATA_HOME: xdgData,
+        XDG_DATA_HOME: this.xdgDataHome,
         XDG_CONFIG_DIRS: "",
         OPENCODE_DISABLE_GLOBAL_CONFIG: "1",
         OPENCODE_DISABLE_CLAUDE_CODE: "1",
-        OPENCODE_CONFIG_CONTENT: JSON.stringify(this.mcpConfig),
+        OPENCODE_CONFIG_CONTENT: this.mcpConfig,
         GIT_CONFIG_GLOBAL: hasGit ? this.gitconfigPath : "/dev/null",
       },
     });
@@ -210,6 +237,9 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
   if (options.workDir !== undefined && options.workspaceId !== undefined) {
     throw new Error("enginebay: set either workDir or workspaceId, not both");
   }
+  assertProductExtraEnv(options.extraEnv, {
+    rejectConfigContent: options.dataDir !== undefined,
+  });
   const workspace = await prepareWorkspace({
     path: options.workDir,
     id: options.workspaceId,
@@ -224,17 +254,20 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
   }
 
   const runtimeDir = await mkdtemp(join(tmpdir(), "enginebay-runtime-"));
-  const dataDir = await mkdtemp(join(tmpdir(), "enginebay-data-"));
+  const ownedDataDir =
+    options.dataDir === undefined
+      ? await mkdtemp(join(tmpdir(), "enginebay-data-"))
+      : undefined;
+  const xdgDataHome = options.dataDir ?? join(ownedDataDir!, "share");
   const isolatedHome = join(runtimeDir, "home");
   const xdgConfig = join(runtimeDir, "config");
-  const xdgState = join(dataDir, "state");
-  const xdgCache = join(dataDir, "cache");
-  const xdgData = join(dataDir, "share");
+  const xdgState = join(runtimeDir, "state");
+  const xdgCache = join(runtimeDir, "cache");
   await mkdir(isolatedHome, { recursive: true });
   await mkdir(xdgConfig, { recursive: true });
   await mkdir(xdgState, { recursive: true });
   await mkdir(xdgCache, { recursive: true });
-  await mkdir(xdgData, { recursive: true });
+  await mkdir(xdgDataHome, { recursive: true });
 
   let instructionsPath: string | undefined;
   if (options.instructions && options.instructions.length > 0) {
@@ -242,30 +275,40 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
     await writeFile(instructionsPath, options.instructions, "utf8");
   }
 
-  const mcpConfig = buildOpencodeMcpConfig({
+  const extraEnv = options.extraEnv ?? {};
+  const mcpConfig = buildOpencodeConfigContent({
     mcp: options.mcp,
     instructionsPath,
+    config: options.config,
+    extraEnv,
   });
 
   await attachOpencodeAuth({
-    hostShareDir: hostOpencodeShareDir(hostHome),
-    isolatedShareDir: xdgData,
+    hostShareDir: options.auth?.sourceDir ?? hostOpencodeShareDir(hostHome),
+    isolatedShareDir: xdgDataHome,
   });
+  if (options.resetSession) {
+    await resetOpencodeSession(xdgDataHome);
+  }
 
   const gitconfigPath = join(isolatedHome, ".gitconfig");
-  const extraEnv = options.extraEnv ?? {};
   const bay = new OpencodeBay({
     workspace,
     runtimeDir,
-    dataDir,
+    dataDir: ownedDataDir,
+    xdgDataHome,
+    ownsDataDir: ownedDataDir !== undefined,
+    rejectConfigContent: options.dataDir !== undefined,
     hostEnv,
     hostHome,
     model: options.model,
+    agent: options.agent,
     extraEnv,
     committerName: options.git?.committerName ?? "enginebay",
     instructionsPath,
     mcpConfig,
     gitconfigPath,
+    spawnAdapter: options.spawn,
     recoveryAttempts: options.recoveryAttempts,
     recoveryBackoffMs: options.recoveryBackoffMs,
   });
@@ -275,7 +318,11 @@ export async function openBay(options: OpenBayOptions): Promise<Bay> {
 
 export async function doctor(
   engine: EngineId,
-  host?: { env?: NodeJS.ProcessEnv; home?: string },
+  host?: {
+    env?: NodeJS.ProcessEnv;
+    home?: string;
+    authSourceDir?: string;
+  },
 ): Promise<import("./types.js").DoctorReport> {
   const env = host?.env ?? process.env;
   const home = resolveHostHome(env, host?.home);
@@ -296,7 +343,7 @@ export async function doctor(
   }
   const found = commandExists(OPENCODE_COMMAND, env);
   const version = found ? readCommandVersion(OPENCODE_COMMAND, env) : undefined;
-  const shareDir = hostOpencodeShareDir(home);
+  const shareDir = host?.authSourceDir ?? hostOpencodeShareDir(home);
   const authFound = opencodeAuthPresent(shareDir);
   const cli = {
     found,
