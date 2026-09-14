@@ -102,7 +102,68 @@ describe("parseOpencodeLine", () => {
           tokens: { input: 10, output: 20, total: 30 },
         }),
       ]),
-    ).toEqual([{ kind: "tokens", input: 10, output: 20, total: 30 }]);
+    ).toEqual([
+      { kind: "tokens", input: 10, output: 20, total: 30 },
+      { kind: "turn", reason: "unknown" },
+    ]);
+  });
+
+  it("maps step_finish reason and message id onto a turn event", () => {
+    const insight: { sessionId?: string } = { sessionId: "ses_1" };
+    expect(
+      parseOpencodeLine(
+        JSON.stringify({
+          type: "step_finish",
+          part: { reason: "stop", messageID: "msg_final" },
+        }),
+        new Set(),
+        insight,
+      ),
+    ).toEqual([
+      {
+        kind: "turn",
+        reason: "stop",
+        sessionId: "ses_1",
+        messageId: "msg_final",
+      },
+    ]);
+  });
+
+  it("emits session.created when a session id is present", () => {
+    const insight: { sessionId?: string } = {};
+    expect(
+      parseOpencodeLine(
+        JSON.stringify({
+          type: "session.created",
+          sessionID: "ses_created",
+        }),
+        new Set(),
+        insight,
+      ),
+    ).toEqual([
+      { kind: "session", phase: "created", sessionId: "ses_created" },
+    ]);
+    expect(insight.sessionId).toBe("ses_created");
+  });
+
+  it("emits session.idle when a session id is present", () => {
+    const insight: { sessionId?: string } = { sessionId: "ses_1" };
+    expect(
+      parseOpencodeLine(
+        JSON.stringify({ type: "session.idle", sessionID: "ses_1" }),
+        new Set(),
+        insight,
+      ),
+    ).toEqual([{ kind: "session", phase: "idle", sessionId: "ses_1" }]);
+  });
+
+  it("does not invent a session event when the line has no session id", () => {
+    expect(
+      parseOpencodeLine(
+        JSON.stringify({ type: "session.created" }),
+        new Set(),
+      ),
+    ).toEqual([]);
   });
 
   it("captures session IDs and OpenCode error.name / isRetryable", () => {
@@ -131,7 +192,7 @@ describe("parseOpencodeLine", () => {
   });
 
   it("treats non-JSON stdout as a diagnostic and ignores unknown JSON types", () => {
-    expect(parseAll(["not json", JSON.stringify({ type: "session.created" })])).toEqual([
+    expect(parseAll(["not json", JSON.stringify({ type: "plugin.trace" })])).toEqual([
       { kind: "diagnostic", stream: "stdout", text: "not json" },
     ]);
   });

@@ -94,6 +94,29 @@ async function drain(
 }
 
 describe("iterateRecoverableRun", () => {
+  it("surfaces session id on the sink and the exit event", async () => {
+    const sink: { sessionId?: string } = {};
+    const events = await collect(
+      iterateRecoverableRun({
+        recoveryAttempts: 0,
+        isStopped: () => false,
+        setRunning: () => {},
+        sessionSink: sink,
+        createParser: () => (_line, insight) => {
+          insight.sessionId = "ses_public";
+          return [{ kind: "text", text: "hi" }];
+        },
+        spawn: () => finishedRun({ code: 0, stderr: "" }, ["line"]),
+      }),
+    );
+    expect(sink.sessionId).toBe("ses_public");
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 0,
+      sessionId: "ses_public",
+    });
+  });
+
   it("does not retry a non-critical crash when no session id was captured", async () => {
     let spawns = 0;
     const events = await collect(
@@ -226,7 +249,11 @@ describe("iterateRecoverableRun", () => {
       }),
     );
     expect(resumed).toEqual([undefined, "ses_1", "ses_2"]);
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 0,
+      sessionId: "ses_3",
+    });
   });
 
   it("kills the child when the consumer cancels the iterator", async () => {

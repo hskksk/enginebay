@@ -70,7 +70,9 @@ export type BayEvent =
   | { kind: "tokens"; input?: number; output?: number; total?: number }
   | { kind: "diagnostic"; stream: "stdout" | "stderr"; text: string }
   | { kind: "error"; message: string; critical: boolean }
-  | { kind: "exit"; code: number; error?: BayError };
+  | { kind: "turn"; reason: string; sessionId?: string; messageId?: string }
+  | { kind: "session"; phase: "created" | "idle"; sessionId: string }
+  | { kind: "exit"; code: number; sessionId?: string; error?: BayError };
 
 export type DoctorReport = {
   ok: boolean;
@@ -84,6 +86,8 @@ export interface Bay {
   readonly engine: EngineId;
   readonly workDir: string;
   readonly workspace: PreparedWorkspace;
+  /** Latest session id observed on this bay, if the engine emitted one. */
+  readonly sessionId: string | undefined;
   run(prompt: string): AsyncIterable<BayEvent>;
   /** Replace extraEnv (and rewrite isolated gitconfig if a token is present). */
   updateExtraEnv(

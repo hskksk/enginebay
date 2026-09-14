@@ -52,6 +52,9 @@ class OpencodeBay implements Bay {
   readonly engine: EngineId = "opencode";
   readonly workDir: string;
   readonly workspace: PreparedWorkspace;
+  get sessionId(): string | undefined {
+    return this.control.sessionId;
+  }
   private readonly runtimeDir: string;
   private readonly dataDir: string;
   private readonly hostEnv: NodeJS.ProcessEnv;

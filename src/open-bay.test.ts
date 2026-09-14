@@ -236,6 +236,58 @@ describe("openBay OpenCode isolation", () => {
     await bay.close();
     expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
   });
+
+  it("sets Bay.sessionId from session.created and maps step_finish to turn", async () => {
+    const hostHome = await tempDir("enginebay-session-host-");
+    const workDir = await tempDir("enginebay-session-work-");
+    const binDir = await tempDir("enginebay-session-bin-");
+    await installFakeOpencode(binDir);
+    await writeHostOpencodeAuth(hostHome);
+
+    const bay = await openBay({
+      engine: "opencode",
+      workDir,
+      hostHome,
+      hostEnv: withFakePath(binDir, {
+        HOME: hostHome,
+        PATH: process.env.PATH,
+      }),
+      extraEnv: {
+        ENGINEBAY_FAKE_NO_SESSION: "1",
+        ENGINEBAY_FAKE_EVENTS: [
+          JSON.stringify({
+            type: "session.created",
+            sessionID: "ses_created",
+          }),
+          JSON.stringify({
+            type: "text",
+            part: { type: "text", text: "hi" },
+          }),
+          JSON.stringify({
+            type: "step_finish",
+            part: { reason: "stop", messageID: "msg_1" },
+          }),
+        ].join("\n"),
+      },
+      recoveryAttempts: 0,
+    });
+
+    expect(bay.sessionId).toBeUndefined();
+    const events = await collectEvents(bay, "go");
+    expect(events).toEqual([
+      { kind: "session", phase: "created", sessionId: "ses_created" },
+      { kind: "text", text: "hi" },
+      {
+        kind: "turn",
+        reason: "stop",
+        sessionId: "ses_created",
+        messageId: "msg_1",
+      },
+      { kind: "exit", code: 0, sessionId: "ses_created" },
+    ]);
+    expect(bay.sessionId).toBe("ses_created");
+    await bay.close();
+  });
 });
 
 describe("openBay process error recovery", () => {
@@ -292,7 +344,11 @@ describe("openBay process error recovery", () => {
       /non-critical error; restarting process and resuming session/,
     );
     expect(events[2]).toEqual({ kind: "text", text: "resumed ok" });
-    expect(events[3]).toEqual({ kind: "exit", code: 0 });
+    expect(events[3]).toEqual({
+      kind: "exit",
+      code: 0,
+      sessionId: "ses_recover",
+    });
 
     const firstArgv = JSON.parse(
       await readFile(join(dumpDir, "argv-1.json"), "utf8"),
@@ -638,7 +694,11 @@ describe("openBay process error recovery", () => {
     const third = await argvFor(3);
     expect(second[second.indexOf("--session") + 1]).toBe("sess-1");
     expect(third[third.indexOf("--session") + 1]).toBe("sess-2");
-    expect(events.at(-1)).toEqual({ kind: "exit", code: 0 });
+    expect(events.at(-1)).toEqual({
+      kind: "exit",
+      code: 0,
+      sessionId: "sess-3",
+    });
   });
 
   it("does not restart a critical failure that reported a session id", async () => {

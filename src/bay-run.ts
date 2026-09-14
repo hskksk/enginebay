@@ -24,6 +24,8 @@ export class BayProcessControl {
   /** The most recent kill, so a later caller can wait for a child it no longer owns. */
   private settled: Promise<void> = Promise.resolve();
   closed = false;
+  /** Latest engine session id observed during a run on this bay. */
+  sessionId: string | undefined;
 
   abort(): Promise<void> {
     this.seq += 1;
@@ -80,6 +82,7 @@ type RecoverableRunInput = {
   isStopped: () => boolean;
   recoveryAttempts?: number;
   recoveryBackoffMs?: number;
+  sessionSink?: { sessionId?: string };
 };
 
 export function startBayRun(
@@ -93,7 +96,12 @@ export function startBayRun(
         throw new Error("enginebay: bay is closed");
       }
       const { isStopped, setRunning } = await control.beginRun();
-      return iterateRecoverableRun({ ...input, isStopped, setRunning })[
+      return iterateRecoverableRun({
+        ...input,
+        isStopped,
+        setRunning,
+        sessionSink: control,
+      })[
         Symbol.asyncIterator
       ]();
     })();
@@ -190,6 +198,31 @@ export function iterateRecoverableRun(
   };
 }
 
+function noteSession(
+  input: RecoverableRunInput,
+  insight: RunInsight,
+  current: string | undefined,
+): string | undefined {
+  const next = insight.sessionId ?? current;
+  if (insight.sessionId && input.sessionSink) {
+    input.sessionSink.sessionId = insight.sessionId;
+  }
+  return next;
+}
+
+function exitEvent(
+  code: number,
+  sessionId: string | undefined,
+  error?: BayError,
+): BayEvent {
+  return {
+    kind: "exit",
+    code,
+    ...(sessionId ? { sessionId } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
 async function* recoverLoop(
   input: RecoverableRunInput & { backoff: (ms: number) => Promise<void> },
 ): AsyncGenerator<BayEvent> {
@@ -215,13 +248,14 @@ async function* recoverLoop(
     try {
       for await (const line of spawned.stdout) {
         for (const event of parseLine(line, insight)) {
+          sessionId = noteSession(input, insight, sessionId);
           yield redactBayEvent(event);
         }
       }
       const finished = await spawned.wait();
       // Resuming mints a new session id on Claude and Cursor, so the newest id
       // is the one that has the previous attempt's work.
-      sessionId = insight.sessionId ?? sessionId;
+      sessionId = noteSession(input, insight, sessionId);
       const stderr = finished.stderr.trim();
       if (stderr.length > 0) {
         yield redactBayEvent({
@@ -235,7 +269,7 @@ async function* recoverLoop(
       const processFailed = finished.code !== 0 || Boolean(finished.spawnError);
       const engineFailed = Boolean(insight.engineErrorMessage);
       if (!processFailed && !engineFailed && !stopped) {
-        yield { kind: "exit", code: 0 };
+        yield exitEvent(0, sessionId);
         return;
       }
       lastError = classifyProcessFailure({
@@ -292,12 +326,8 @@ async function* recoverLoop(
       message: lastError.message,
       critical: lastError.critical,
     });
-    yield redactBayEvent({
-      kind: "exit",
-      code: lastCode || 1,
-      error: lastError,
-    });
+    yield redactBayEvent(exitEvent(lastCode || 1, sessionId, lastError));
     return;
   }
-  yield { kind: "exit", code: lastCode || 1 };
+  yield exitEvent(lastCode || 1, sessionId);
 }
