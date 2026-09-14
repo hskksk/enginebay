@@ -218,6 +218,15 @@ describe("buildOpencodeLaunchArgs", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("from-args");
   });
 
+  it("does not duplicate --dir when extras already have it", () => {
+    const args = buildOpencodeLaunchArgs({
+      workDir: "/tmp/work",
+      args: ["--dir", "/tmp/other", "--verbose"],
+    });
+    expect(args.filter((arg) => arg === "--dir")).toHaveLength(1);
+    expect(args[args.indexOf("--dir") + 1]).toBe("/tmp/other");
+  });
+
   it("forwards a full subcommand without prepending interactive run", () => {
     expect(
       buildOpencodeLaunchArgs({

@@ -118,13 +118,16 @@ export function buildOpencodeLaunchArgs(options: {
     }
     return args;
   }
-  const args = [
-    "run",
-    "--interactive",
-    "--dir",
-    options.workDir,
-    "--dangerously-skip-permissions",
-  ];
+  const args = ["run"];
+  if (!argsHaveFlag(extras, "--interactive")) {
+    args.push("--interactive");
+  }
+  if (!argsHaveFlag(extras, "--dir")) {
+    args.push("--dir", options.workDir);
+  }
+  if (!argsHaveFlag(extras, "--dangerously-skip-permissions")) {
+    args.push("--dangerously-skip-permissions");
+  }
   if (!argsHaveFlag(extras, "--model")) {
     pushFlag(args, "--model", options.model);
   }
