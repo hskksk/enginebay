@@ -127,7 +127,9 @@ export type BayEvent =
   | { kind: "tokens"; input?: number; output?: number; total?: number }
   | { kind: "diagnostic"; stream: "stdout" | "stderr"; text: string }
   | { kind: "error"; message: string; critical: boolean }
-  | { kind: "exit"; code: number; error?: BayError };
+  | { kind: "turn"; reason: string; sessionId?: string; messageId?: string }
+  | { kind: "session"; phase: "created" | "idle"; sessionId: string }
+  | { kind: "exit"; code: number; sessionId?: string; error?: BayError };
 
 export type DoctorReport = {
   ok: boolean;
@@ -141,6 +143,7 @@ export interface Bay {
   readonly engine: EngineId;
   readonly workDir: string;
   readonly workspace: PreparedWorkspace;
+  readonly sessionId: string | undefined;
   run(prompt: string): AsyncIterable<BayEvent>;
   updateExtraEnv(extraEnv: Record<string, string>, git?: { committerName?: string }): Promise<void>;
   abort(): Promise<void>;
@@ -421,7 +424,7 @@ Process teardown rules the bay depends on:
 
 Consumers still own when to send the next prompt. Recovery only finishes the in-flight `run()`.
 
-OpenCode v1 parser reads `opencode run --format json` NDJSON (`text`, `reasoning`, `tool_use`, `step_finish`). It does **not** require the eval collector plugin or `opencode export`. If stdout is too thin for thinking/tools, a later slice may add export as a fallback — not in v1.
+OpenCode v1 parser reads `opencode run --format json` NDJSON (`text`, `reasoning`, `tool_use`, `step_finish` → `turn`, `session.created` / `session.idle` → `session`). It does **not** require an eval collector plugin or `opencode export`. If stdout is too thin for thinking/tools, a later slice may add export as a fallback — not in v1.
 
 Claude parser reads `claude --output-format stream-json` (`assistant` thinking/text/`tool_use`, `user` `tool_result`). Remaining-budget and other product-specific fields stay on the consumer side.
 

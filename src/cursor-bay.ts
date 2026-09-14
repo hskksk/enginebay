@@ -37,6 +37,9 @@ class CursorBay implements Bay {
   readonly engine: EngineId = "cursor-agent";
   readonly workDir: string;
   readonly workspace: PreparedWorkspace;
+  get sessionId(): string | undefined {
+    return this.control.sessionId;
+  }
   private readonly runtimeDir: string;
   private readonly configDir: string;
   private readonly hostEnv: NodeJS.ProcessEnv;

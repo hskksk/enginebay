@@ -26,7 +26,7 @@ enginebay owns that knowledge. A consumer owns *when* to run, *which* prompt, *w
 | Isolate config / session DB | yes | — |
 | Inherit provider auth from the host | yes | host login (`opencode auth`, `claude login`, `agent login`) |
 | Inject session-scoped MCP | yes | provide the stdio command |
-| Canonical events (text, thinking, tools) | yes | map to product traces |
+| Canonical events (text, thinking, tools, turn, session) | yes | map to product traces |
 | Workspace directory | ephemeral temp, named XDG, or a path you pass | choose id vs path; clone / destroy policy |
 | Day loop, ticks, personality, board | no | yes |
 | GitHub App token minting | no | pass a token via `extraEnv` if needed |
@@ -56,7 +56,7 @@ const bay = await openBay({
 });
 
 for await (const event of bay.run("Read the briefing and set today's goals.")) {
-  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "diagnostic" | "error" | "exit"
+  // event.kind: "text" | "thinking" | "tool_call" | "tool_result" | "tokens" | "turn" | "session" | "diagnostic" | "error" | "exit"
 }
 
 await bay.close();

@@ -29,6 +29,9 @@ export function redactBayEvent(event: BayEvent): BayEvent {
           message: redactSecrets(event.error.message),
         },
       };
+    case "turn":
+    case "session":
+      return event;
     case "tool_call":
       return {
         ...event,
@@ -151,6 +154,36 @@ export function parseOpencodeLine(
   const type = raw.type;
   const part = raw.part;
   const partType = part?.type;
+
+  if (type === "step_finish") {
+    const reason =
+      typeof part?.reason === "string" && part.reason.length > 0
+        ? part.reason
+        : "unknown";
+    const messageId =
+      typeof part?.messageID === "string" && part.messageID.length > 0
+        ? part.messageID
+        : undefined;
+    events.push({
+      kind: "turn",
+      reason,
+      ...(insight?.sessionId ? { sessionId: insight.sessionId } : {}),
+      ...(messageId ? { messageId } : {}),
+    });
+    return events;
+  }
+
+  if (type === "session.created" || type === "session.idle") {
+    const sessionId = insight?.sessionId;
+    if (sessionId) {
+      events.push({
+        kind: "session",
+        phase: type === "session.idle" ? "idle" : "created",
+        sessionId,
+      });
+    }
+    return events;
+  }
 
   if (
     (type === "text" || partType === "text") &&
