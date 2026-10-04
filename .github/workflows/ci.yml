@@ -15,13 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hskksk/gh-actions/setup-pnpm@v1
-        with:
-          pnpm-version: "11.25.0"
-          node-version: "22.14.0"
-          cache: "true"
-          install: "true"
-          frozen-lockfile: "true"
+      - uses: hskksk/gh-actions/setup-mise@v1
+
+      - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
       - run: pnpm test
