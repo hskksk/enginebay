@@ -8,6 +8,8 @@ on:
 
 jobs:
   opencode:
+    permissions:
+      id-token: write
     uses: hskksk/gh-actions/.github/workflows/opencode.yml@v1
     secrets: inherit
     with:
