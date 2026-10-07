@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hskksk/gh-actions/setup-mise@v1
+      - uses: hskksk/gh-actions/actions/setup-mise@v1
 
       - run: pnpm install --frozen-lockfile
 
