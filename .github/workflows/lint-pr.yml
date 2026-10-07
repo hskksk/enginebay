@@ -1,0 +1,13 @@
+# Conventional Commits lint on the PR title and on every commit, via hskksk/gh-actions.
+# Reusable workflow: hskksk/gh-actions/.github/workflows/lint-pr.yml
+name: lint-pr
+
+on:
+  pull_request:
+
+jobs:
+  lint-pr:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: hskksk/gh-actions/.github/workflows/lint-pr.yml@v1
