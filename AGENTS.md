@@ -32,7 +32,9 @@ Unit tests must not require a live coding CLI. Live engines are optional / manua
 
 ## Commits and PR titles
 
-Releases use [semantic-release](https://semantic-release.gitbook.io/) with [@semantic-release/commit-analyzer](https://github.com/semantic-release/commit-analyzer) and [Conventional Commits](https://www.conventionalcommits.org/). **Squash merge is the norm** — the merged commit message is usually the PR title, so set the PR title to the final release message.
+Releases use [semantic-release](https://semantic-release.gitbook.io/) with [@semantic-release/commit-analyzer](https://github.com/semantic-release/commit-analyzer) and [Conventional Commits](https://www.conventionalcommits.org/). Config matches [hskksk/gh-actions](https://github.com/hskksk/gh-actions) (see [`.releaserc.json`](.releaserc.json)).
+
+**Merging to `main`:** use **merge commit** or **rebase and merge**, not squash. semantic-release reads each commit on `main`; squash titles hide `feat` / `fix` commits that lived only in the PR body. Use Conventional Commits on **every commit** that lands on `main`.
 
 ### Format
 
@@ -67,10 +69,10 @@ Configured in [`.releaserc.json`](.releaserc.json):
 | Prefix / signal | Release |
 | --- | --- |
 | `feat:` | **minor** |
-| `fix:`, `perf:`, `refactor:`, `docs:`, `chore:`, `ci:`, `test:` | **patch** |
+| Any other conventional commit (`fix:`, `perf:`, `refactor:`, `docs:`, `chore:`, `ci:`, `test:`, …) | **patch** (catch-all rule) |
 | `BREAKING CHANGE:` in footer, or `!` after type/scope (e.g. `feat!:`) | **major** |
 
-Use `feat:` only for user-visible API or behavior changes. Use `fix:` for bug fixes. Use `refactor:` for internal reshaping without intended behavior change. Use `docs:`, `ci:`, `chore:`, `test:` for non-feature work — they still trigger a patch release here.
+Use `feat:` only for user-visible API or behavior changes. Use `fix:` for bug fixes. Non-feature work still triggers at least a patch release here.
 
 ### Breaking changes
 
